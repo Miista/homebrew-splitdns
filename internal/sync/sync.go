@@ -27,11 +27,18 @@ const (
 
 // Result summarizes a sync run.
 type Result struct {
-	Written []string // file paths written/updated
-	Deleted []string // file paths deleted
-	Synced  []string // service names successfully synced
-	Skipped map[string]string
-	Total   int
+	Created   []string // paths that did not exist before
+	Updated   []string // paths whose content changed
+	Deleted   []string // paths removed
+	Unchanged int      // paths rewritten with identical content
+	Synced    []string // service names successfully synced
+	Skipped   map[string]string
+	Total     int
+}
+
+// Changed reports whether the run altered any file on disk.
+func (r *Result) Changed() bool {
+	return len(r.Created) > 0 || len(r.Updated) > 0 || len(r.Deleted) > 0
 }
 
 // Engine reconciles the repo at repoRoot.
@@ -66,10 +73,19 @@ func (e *Engine) Reconcile(p *plan.Plan, mode Mode) (*Result, error) {
 		var paths []string
 		for _, f := range p.Files[svc] {
 			abs := filepath.Join(e.RepoRoot, f.Path)
+			// Classify the write by comparing to what's already on disk, so
+			// callers can show only what actually changed.
+			switch existing, err := os.ReadFile(abs); {
+			case err != nil: // missing (or unreadable) → treat as create
+				res.Created = append(res.Created, f.Path)
+			case string(existing) == f.Content:
+				res.Unchanged++
+			default:
+				res.Updated = append(res.Updated, f.Path)
+			}
 			if err := config.AtomicWrite(abs, []byte(f.Content)); err != nil {
 				return res, fmt.Errorf("write %s for %s: %w", f.Path, svc, err)
 			}
-			res.Written = append(res.Written, f.Path)
 			written[f.Path] = true
 			paths = append(paths, f.Path)
 		}
@@ -108,7 +124,9 @@ func (e *Engine) Reconcile(p *plan.Plan, mode Mode) (*Result, error) {
 		}
 	}
 
-	sort.Strings(res.Written)
+	sort.Strings(res.Created)
+	sort.Strings(res.Updated)
+	sort.Strings(res.Deleted)
 	sort.Strings(res.Synced)
 
 	if err := e.Manifest.Save(); err != nil {

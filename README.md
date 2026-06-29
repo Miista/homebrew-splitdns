@@ -106,6 +106,7 @@ shd [-C <dir>] remove domain <name>
 shd [-C <dir>] set    dns-host <name>
 
 shd [-C <dir>] list
+shd [-C <dir>] verify
 shd [-C <dir>] version
 
   -C <dir>   run as if shd were started in <dir> (default: current directory)
@@ -122,6 +123,10 @@ shd [-C <dir>] version
 | `remove host` / `remove domain` | **Refuses** while any service still references it (and lists the blockers). Idempotent otherwise. |
 | `set dns-host <name>` | Set the default resolver host (the one whose dnsmasq receives records). |
 | `list` | Show current hosts, domains, and services with per-service validity (✓/✗). Read-only; exits non-zero if any service is invalid. |
+| `verify` | Check **live** DNS resolution per service: pihole's own view (in-container `dig`) + the client view (`getent`), asserting A == host IP and AAAA == `::`. Run **on the resolver host** after a deploy (§13). Needs docker. |
+
+`sync` reports only what changed by default (`+` created, `~` updated, `-` deleted) plus a
+summary and the synced service names; pass `--verbose` to also see the unchanged-file count.
 
 All commands are **verb-first**: `<verb> <noun> <args>` (e.g. `add domain example.com`).
 `update`, `remove`, and `sync` refuse with a guiding message (and non-zero exit) when there is no

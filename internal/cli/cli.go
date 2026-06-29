@@ -90,6 +90,8 @@ func Run(args []string) int {
 		return dispatchSet(cfgPath, rest)
 	case "list":
 		return cmdList(cfgPath, rest)
+	case "verify":
+		return cmdVerify(cfgPath, rest)
 	case "sync":
 		return cmdSync(repoRoot, cfgPath, rest)
 	case "-h", "--help", "help":
@@ -240,7 +242,23 @@ func runSyncAfterMutation(repoRoot string, cfg *config.Config, svc string) int {
 		hint("The change is in services.yaml. Run 'shd sync' once that's resolved.")
 		return 1
 	}
-	return runSync(repoRoot, cfg, syncpkg.Incremental)
+	return runSync(repoRoot, cfg, syncpkg.Incremental, false)
+}
+
+// fileTally renders a compact summary of file changes (e.g. "2 written,
+// 1 updated, 3 deleted"), or "" if nothing changed.
+func fileTally(res *syncpkg.Result) string {
+	var parts []string
+	if n := len(res.Created); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d written", n))
+	}
+	if n := len(res.Updated); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d updated", n))
+	}
+	if n := len(res.Deleted); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d deleted", n))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // syncBlockedReason returns a human-readable reason a sync cannot run at all
@@ -353,6 +371,7 @@ func cmdSync(repoRoot, cfgPath string, args []string) int {
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
 	incremental := fs.Bool("incremental", false, "write/update only, never delete (default)")
 	complete := fs.Bool("complete", false, "incremental plus GC of orphaned tracked files")
+	verbose := fs.Bool("verbose", false, "list every generated file, not just changes")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -369,12 +388,13 @@ func cmdSync(repoRoot, cfgPath string, args []string) int {
 	if cfg == nil {
 		return code
 	}
-	return runSync(repoRoot, cfg, mode)
+	return runSync(repoRoot, cfg, mode, *verbose)
 }
 
 // runSync builds the plan, reconciles, prints a summary, and returns the exit
-// code per design §8.
-func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
+// code per design §8. By default it reports only what changed; verbose lists
+// every generated file.
+func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode, verbose bool) int {
 	// Pre-flight: refuse the whole sync (rather than silently skipping every
 	// affected service) when a repo-wide precondition isn't met.
 	if reason := syncBlockedReason(cfg); reason != "" {
@@ -392,16 +412,35 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 		return 1
 	}
 
-	for _, w := range res.Written {
-		fmt.Printf("  ✓ %s\n", w)
+	// Show changed files (always) and, in verbose mode, the unchanged ones too.
+	for _, w := range res.Created {
+		fmt.Printf("  + %s\n", w)
+	}
+	for _, w := range res.Updated {
+		fmt.Printf("  ~ %s\n", w)
 	}
 	for _, d := range res.Deleted {
 		fmt.Printf("  - %s\n", d)
 	}
 
-	synced := len(res.Synced)
-	total := res.Total
-	fmt.Printf("Synced %d/%d services.\n", synced, total)
+	// Summary line: services + a compact file tally, then the service names.
+	synced, total := len(res.Synced), res.Total
+	fmt.Printf("Synced %d/%d services", synced, total)
+	if parts := fileTally(res); parts != "" {
+		fmt.Printf(" — %s", parts)
+	} else {
+		fmt.Printf(" — no file changes")
+	}
+	fmt.Println(".")
+	for _, name := range res.Synced {
+		fmt.Printf("  • %s\n", name)
+	}
+
+	if verbose {
+		fmt.Printf("(%d files generated, %d unchanged)\n",
+			len(res.Created)+len(res.Updated)+res.Unchanged, res.Unchanged)
+	}
+
 	if len(res.Skipped) > 0 {
 		fmt.Printf("%d skipped:\n", len(res.Skipped))
 		for _, name := range sortedSkip(res.Skipped) {
@@ -495,6 +534,7 @@ Building blocks (a service references a host and a domain):
 Other:
   shd sync   [--incremental | --complete]
   shd list                     Show current hosts, domains, and services (with validity).
+  shd verify                   Check live DNS resolution per service (run on the resolver host; needs docker).
   shd version
   shd help
 

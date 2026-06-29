@@ -172,6 +172,7 @@ shd [-C <dir>] update service <name> [--fqdn ...] [--host ...] [--backend ...] [
 shd [-C <dir>] remove service <name>
 shd [-C <dir>] sync   [--incremental | --complete]
 shd [-C <dir>] list
+shd [-C <dir>] verify
 ```
 
 - **`list`**: read-only. Prints hosts (marking the default dns_host), domains, and services with
@@ -293,15 +294,20 @@ ever needs a different layout, reintroduce an override field rather than hardcod
 - No per-file checksums or clobber-warnings.
 - No editing of machines' main Caddyfiles.
 
-## 13. Recommended post-deploy verification (document for the deploy wrapper, not this tool)
+## 13. Post-deploy verification (`shd verify`)
 
-After a deploy that changed DNS records, verify resolution against the running resolver rather
-than trusting config syntax:
+After a deploy that changed DNS records, verify **resolution against the running resolver**
+rather than trusting config syntax. This is exposed as `shd verify`, run **on the resolver host**
+(it needs the live `pihole` container). For each valid service it performs two checks:
 
-```
-docker exec pihole dig +short <fqdn> @127.0.0.1     # expect the service host IP
-docker exec pihole dig +short AAAA <fqdn> @127.0.0.1 # expect :: (AAAA suppressed)
-```
+- **pihole's own view** (in-container): `docker exec pihole dig +short {A,AAAA} <fqdn> @127.0.0.1`
+  — asserts A == the service host IP and AAAA == `::`. Catches reload-didn't-happen and
+  dir-not-sourced.
+- **client view** (host): `getent hosts <fqdn>` — resolves via the system's real resolver path
+  (= pihole, since all machines use it), asserting the host IP. Catches an overridden record or
+  a leak past split-horizon. `getent` is used (not `dig`) so no `dnsutils` install is needed.
 
-`pihole-FTL --test` only checks syntax; it does not confirm a record resolves. The resolution
-check is the one that catches reload-didn't-happen, dir-not-sourced, and overridden-record.
+`pihole-FTL --test` only checks syntax; it does not confirm a record resolves. `shd verify` is
+the check that catches reload-didn't-happen, dir-not-sourced, and overridden-record. It exits
+non-zero if any check fails. (Originally scoped to the deploy wrapper; promoted to a command
+since it's a pure shell-out with no new code dependency.)
