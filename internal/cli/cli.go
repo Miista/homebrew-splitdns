@@ -230,30 +230,7 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf("✓ Added service %q\n", name)
-	return runSyncAfterMutation(repoRoot, cfg, name)
-}
-
-// runSyncAfterMutation runs an incremental sync following an add/update of
-// service `name` and prints the second phase line. The caller has already
-// printed the first ("✓ Added service X"). On success: "✓ Synced service X".
-// If sync can't proceed (e.g. no dns_host): "✗ Not synced: <reason>", making
-// clear the YAML change WAS saved — only generation was deferred.
-func runSyncAfterMutation(repoRoot string, cfg *config.Config, name string) int {
-	if reason := syncBlockedReason(cfg); reason != "" {
-		fmt.Fprintf(os.Stderr, "✗ Not synced: %s\n", reason)
-		hint("  The change is saved in services.yaml. Run 'shd sync' once that's resolved.")
-		return 1
-	}
-	p := plan.Build(cfg)
-	warnIfIgnored(repoRoot, p)
-	mf := loadManifest(repoRoot, cfg)
-	eng := &syncpkg.Engine{RepoRoot: repoRoot, Manifest: mf}
-	if _, err := eng.Reconcile(p, syncpkg.Incremental); err != nil {
-		errf("%v", err)
-		return 1
-	}
-	fmt.Printf("✓ Synced service %q\n", name)
-	return 0
+	return runSync(repoRoot, cfg, syncOpts{mode: syncpkg.Incremental, afterMutation: true})
 }
 
 // printVerbose lists every generated file grouped by its owner — services by
@@ -369,7 +346,7 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf("✓ Updated service %q\n", name)
-	return runSyncAfterMutation(repoRoot, cfg, name)
+	return runSync(repoRoot, cfg, syncOpts{mode: syncpkg.Incremental, afterMutation: true})
 }
 
 func cmdRemove(repoRoot, cfgPath string, args []string) int {
@@ -431,17 +408,33 @@ func cmdSync(repoRoot, cfgPath string, args []string) int {
 	if cfg == nil {
 		return code
 	}
-	return runSync(repoRoot, cfg, mode, *verbose)
+	return runSync(repoRoot, cfg, syncOpts{mode: mode, verbose: *verbose})
 }
 
-// runSync builds the plan, reconciles, prints a summary, and returns the exit
-// code per design §8. By default it reports only what changed; verbose lists
-// every generated file.
-func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode, verbose bool) int {
-	// Pre-flight: refuse the whole sync (rather than silently skipping every
-	// affected service) when a repo-wide precondition isn't met.
+// syncOpts controls how runSync reports. The reconcile itself is identical
+// whether invoked by the `sync` command or as the second phase of add/update;
+// only the framing differs.
+type syncOpts struct {
+	mode    syncpkg.Mode
+	verbose bool
+	// afterMutation: invoked as the tail of add/update. The output is identical
+	// to a plain sync; only a *blocked* sync differs — the YAML change is
+	// already saved, so it reads "✗ Not synced" rather than "Cannot sync".
+	afterMutation bool
+}
+
+// runSync builds the plan, reconciles, reports, and returns an exit code
+// (design §8). It is the single sync path; add/update call it with
+// afterMutation set rather than reimplementing it.
+func runSync(repoRoot string, cfg *config.Config, o syncOpts) int {
+	// Pre-flight: refuse before writing when a repo-wide precondition isn't met.
 	if reason := syncBlockedReason(cfg); reason != "" {
-		errf("Cannot sync: %s", reason)
+		if o.afterMutation {
+			fmt.Fprintf(os.Stderr, "✗ Not synced: %s\n", reason)
+			hint("  The change is saved in services.yaml. Run 'shd sync' once that's resolved.")
+		} else {
+			errf("Cannot sync: %s", reason)
+		}
 		return 1
 	}
 
@@ -449,14 +442,13 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode, verbose boo
 
 	// Before writing, warn if any output path would be gitignored — those
 	// files would generate fine but never commit/deploy (the repo's
-	// **/data/** rule swallows them). Checked before the write so the user
-	// learns of it up front.
+	// **/data/** rule swallows them).
 	warnIfIgnored(repoRoot, p)
 
 	mf := loadManifest(repoRoot, cfg)
 	eng := &syncpkg.Engine{RepoRoot: repoRoot, Manifest: mf}
 
-	res, err := eng.Reconcile(p, mode)
+	res, err := eng.Reconcile(p, o.mode)
 	if err != nil {
 		errf("%v", err)
 		return 1
@@ -464,26 +456,48 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode, verbose boo
 
 	synced, total := len(res.Synced), res.Total
 	fmt.Printf("Synced %d/%d services.\n", synced, total)
-
-	if verbose {
+	if o.verbose {
 		printVerbose(p, res)
 	} else {
-		for _, name := range res.Synced {
+		// List only services whose files actually changed this run. A no-op
+		// sync lists nothing; an add/update lists just the touched service
+		// (plus any other service that incidentally changed — which is the
+		// truth of what happened).
+		for _, name := range changedServices(p, res) {
 			fmt.Printf("  • %s\n", name)
 		}
 	}
-
 	if len(res.Skipped) > 0 {
 		fmt.Printf("%d skipped:\n", len(res.Skipped))
 		for _, name := range sortedSkip(res.Skipped) {
 			fmt.Printf("  • %s: %s\n", name, res.Skipped[name])
 		}
-	}
-
-	if len(res.Skipped) > 0 {
 		return 1
 	}
 	return 0
+}
+
+// changedServices returns the names of real services (not @domain: TLS owners)
+// whose files were created or updated this run, sorted.
+func changedServices(p *plan.Plan, res *syncpkg.Result) []string {
+	changed := map[string]bool{}
+	for _, path := range append(append([]string{}, res.Created...), res.Updated...) {
+		changed[path] = true
+	}
+	var out []string
+	for svc, files := range p.Files {
+		if plan.IsDomainOwner(svc) {
+			continue
+		}
+		for _, f := range files {
+			if changed[f.Path] {
+				out = append(out, svc)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // loadManifest loads the manifest, rebuilding it if unparseable (design §5/§7).
