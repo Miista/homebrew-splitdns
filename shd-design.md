@@ -60,8 +60,10 @@ Notes:
 - `host_ip` for the A record is **looked up** from `hosts[<host>].ip`. The IP is declared
   once per machine and never repeated in service entries.
 - `dns_host` is a **single repo-wide resolver** (`defaults.dns_host`, set via `shd set dns-host`).
-  Every service's DNS record is routed through it; there is **no per-service override** — the
-  homelab forces all clients through one resolver (pihole), so a single dns_host is the model.
+  Every service's DNS record is routed through it; there is **no per-service override** — all
+  clients go through one resolver (pihole). **Do not hardcode which host that is**: it is
+  configurable and may be repointed to a different box, so always read `defaults.dns_host` rather
+  than assuming the Pi.
 - A service's domain is chosen by matching its `fqdn`'s registrable domain suffix against the
   `domains` map; the TLS snippet name (`tls_<domain with dots→underscores>`) and cert path are
   derived from that domain — no per-domain config.
