@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,40 @@ func TestUnignoreSuggestions_ParentChain(t *testing.T) {
 		if rules[i] != want[i] {
 			t.Errorf("rule[%d] = %q, want %q", i, rules[i], want[i])
 		}
+	}
+}
+
+func TestWriteManagedBlock_CreatesAndPreserves(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+
+	// Create from nothing.
+	if err := writeManagedBlock(path, []string{"!a/", "!a/b/**"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	got := string(b)
+	if !strings.Contains(got, giBlockStart) || !strings.Contains(got, "!a/b/**") {
+		t.Fatalf("block not written: %q", got)
+	}
+
+	// Pre-existing user content is preserved when we add to a file.
+	os.WriteFile(path, []byte("*.tmp\ncerts/\n"), 0o644)
+	if err := writeManagedBlock(path, []string{"!a/"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(path)
+	got = string(b)
+	if !strings.Contains(got, "*.tmp") || !strings.Contains(got, "certs/") {
+		t.Errorf("user content not preserved: %q", got)
+	}
+
+	// Idempotent: replacing the block doesn't duplicate it.
+	if err := writeManagedBlock(path, []string{"!a/"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(path)
+	if n := strings.Count(string(b), giBlockStart); n != 1 {
+		t.Errorf("block duplicated: %d start markers", n)
 	}
 }
