@@ -3,7 +3,6 @@ package cli
 import (
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 
 	"shd/internal/config"
@@ -16,7 +15,8 @@ import (
 // affected services.
 func cmdHost(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: shd host add|remove <name> ...")
+		errf("host requires a subcommand.")
+		hint("Usage: shd host add|remove <name> ...")
 		return 2
 	}
 	sub, rest := args[0], args[1:]
@@ -26,7 +26,7 @@ func cmdHost(cfgPath string, args []string) int {
 	case "remove":
 		return hostRemove(cfgPath, rest)
 	default:
-		fmt.Fprintf(os.Stderr, "host: unknown subcommand %q (want add|remove)\n", sub)
+		errf("Unknown host subcommand %q — expected add or remove.", sub)
 		return 2
 	}
 }
@@ -34,7 +34,8 @@ func cmdHost(cfgPath string, args []string) int {
 func hostAdd(cfgPath string, args []string) int {
 	name, args, ok := leadingName(args)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "host add: missing <name>")
+		errf("host add requires a <name>.")
+		hint("Usage: shd host add <name> --ip <ip> --dir <dir>")
 		return 2
 	}
 	fs := flag.NewFlagSet("host add", flag.ContinueOnError)
@@ -45,65 +46,83 @@ func hostAdd(cfgPath string, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *ip == "" || *dir == "" {
-		fmt.Fprintln(os.Stderr, "host add: --ip and --dir are required")
+	var missing []string
+	if *ip == "" {
+		missing = append(missing, "--ip")
+	}
+	if *dir == "" {
+		missing = append(missing, "--dir")
+	}
+	if len(missing) > 0 {
+		errf("host add is missing required flag(s): %s.", strings.Join(missing, ", "))
+		hint("Usage: shd host add %s --ip <ip> --dir <dir>", name)
 		return 2
 	}
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
 	if _, exists := cfg.Machines[name]; exists {
-		fmt.Fprintf(os.Stderr, "host add: host %q already exists\n", name)
+		errf("Host %q already exists.", name)
 		return 1
 	}
 	cfg.Machines[name] = config.Machine{
 		IP: *ip, Dir: *dir, DnsmasqDir: *dnsmasqDir, CaddySitesDir: *caddyDir,
 	}
+
+	// First host bootstraps the default dns_host so services resolve without a
+	// manual edit; tell the user and how to change it.
+	setDefault := cfg.Defaults.DNSHost == ""
+	if setDefault {
+		cfg.Defaults.DNSHost = name
+	}
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
-	fmt.Printf("added host %q (%s, dir %s)\n", name, *ip, *dir)
+	fmt.Printf("Added host %q (%s, dir %s).\n", name, *ip, *dir)
+	if setDefault {
+		fmt.Printf("Set default dns_host to %q. Change it with: shd dns-host set <name>\n", name)
+	}
 	return 0
 }
 
 func hostRemove(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "host remove: missing <name>")
+		errf("host remove requires a <name>.")
 		return 2
 	}
 	name := args[0]
 
-	cfg, code := loadExisting(cfgPath, "remove host from")
+	cfg, code := loadExisting(cfgPath, "remove a host from")
 	if cfg == nil {
 		return code
 	}
 	if _, exists := cfg.Machines[name]; !exists {
-		fmt.Fprintf(os.Stderr, "host remove: host %q does not exist\n", name)
+		errf("Host %q does not exist.", name)
 		return 1
 	}
 	if users := cfg.ServicesUsingHost(name); len(users) > 0 {
-		fmt.Fprintf(os.Stderr, "host remove: %q is still referenced by %d service(s): %s\n",
-			name, len(users), strings.Join(users, ", "))
-		fmt.Fprintln(os.Stderr, "reassign or remove those services first.")
+		errf("Host %q is still referenced by %d service(s): %s.", name, len(users), strings.Join(users, ", "))
+		hint("Reassign or remove those services first.")
 		return 1
 	}
 	delete(cfg.Machines, name)
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
-	fmt.Printf("removed host %q\n", name)
+	fmt.Printf("Removed host %q.\n", name)
 	return 0
 }
 
 // cmdDomain handles `domain add|remove`.
 func cmdDomain(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: shd domain add|remove <name> ...")
+		errf("domain requires a subcommand.")
+		hint("Usage: shd domain add|remove <name> ...")
 		return 2
 	}
 	sub, rest := args[0], args[1:]
@@ -113,7 +132,7 @@ func cmdDomain(cfgPath string, args []string) int {
 	case "remove":
 		return domainRemove(cfgPath, rest)
 	default:
-		fmt.Fprintf(os.Stderr, "domain: unknown subcommand %q (want add|remove)\n", sub)
+		errf("Unknown domain subcommand %q — expected add or remove.", sub)
 		return 2
 	}
 }
@@ -121,7 +140,8 @@ func cmdDomain(cfgPath string, args []string) int {
 func domainAdd(cfgPath string, args []string) int {
 	name, args, ok := leadingName(args)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "domain add: missing <name>")
+		errf("domain add requires a <name>.")
+		hint("Usage: shd domain add <name> --tls-import <snippet>")
 		return 2
 	}
 	fs := flag.NewFlagSet("domain add", flag.ContinueOnError)
@@ -130,54 +150,88 @@ func domainAdd(cfgPath string, args []string) int {
 		return 2
 	}
 	if *tlsImport == "" {
-		fmt.Fprintln(os.Stderr, "domain add: --tls-import is required")
+		errf("domain add is missing required flag: --tls-import.")
+		hint("Usage: shd domain add %s --tls-import <snippet>", name)
 		return 2
 	}
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
 	if _, exists := cfg.Domains[name]; exists {
-		fmt.Fprintf(os.Stderr, "domain add: domain %q already exists\n", name)
+		errf("Domain %q already exists.", name)
 		return 1
 	}
 	cfg.Domains[name] = config.Domain{TLSImport: *tlsImport}
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
-	fmt.Printf("added domain %q (import %s)\n", name, *tlsImport)
+	fmt.Printf("Added domain %q (imports %s).\n", name, *tlsImport)
 	return 0
 }
 
 func domainRemove(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "domain remove: missing <name>")
+		errf("domain remove requires a <name>.")
 		return 2
 	}
 	name := args[0]
 
-	cfg, code := loadExisting(cfgPath, "remove domain from")
+	cfg, code := loadExisting(cfgPath, "remove a domain from")
 	if cfg == nil {
 		return code
 	}
 	if _, exists := cfg.Domains[name]; !exists {
-		fmt.Fprintf(os.Stderr, "domain remove: domain %q does not exist\n", name)
+		errf("Domain %q does not exist.", name)
 		return 1
 	}
 	if users := cfg.ServicesUsingDomain(name); len(users) > 0 {
-		fmt.Fprintf(os.Stderr, "domain remove: %q is still referenced by %d service(s): %s\n",
-			name, len(users), strings.Join(users, ", "))
-		fmt.Fprintln(os.Stderr, "reassign or remove those services first.")
+		errf("Domain %q is still referenced by %d service(s): %s.", name, len(users), strings.Join(users, ", "))
+		hint("Reassign or remove those services first.")
 		return 1
 	}
 	delete(cfg.Domains, name)
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
-	fmt.Printf("removed domain %q\n", name)
+	fmt.Printf("Removed domain %q.\n", name)
+	return 0
+}
+
+// cmdDNSHost handles `dns-host set <name>` — sets defaults.dns_host, the
+// machine whose dnsmasq receives address= records unless a service overrides
+// it. Without this, a CLI-only bootstrap leaves dns_host unset and every
+// service is skipped.
+func cmdDNSHost(cfgPath string, args []string) int {
+	if len(args) < 1 || args[0] != "set" {
+		errf("dns-host requires the 'set' subcommand.")
+		hint("Usage: shd dns-host set <name>")
+		return 2
+	}
+	if len(args) < 2 {
+		errf("dns-host set requires a <name>.")
+		hint("Usage: shd dns-host set <name>")
+		return 2
+	}
+	name := args[1]
+
+	cfg, code := loadExisting(cfgPath, "set the dns-host in")
+	if cfg == nil {
+		return code
+	}
+	if _, exists := cfg.Machines[name]; !exists {
+		errf("Host %q does not exist — add it first with: shd host add %s --ip <ip> --dir <dir>", name, name)
+		return 1
+	}
+	cfg.Defaults.DNSHost = name
+	if err := cfg.Save(); err != nil {
+		errf("%v", err)
+		return 1
+	}
+	fmt.Printf("Set default dns_host to %q.\n", name)
 	return 0
 }

@@ -25,6 +25,21 @@ const (
 // -ldflags "-X shd/internal/cli.Version=...".
 var Version = "dev"
 
+// errf prints a user-facing error to stderr in the house style:
+//
+//	Error: <Capitalized message>.
+//
+// Pass the message without a leading "Error:" or trailing newline.
+func errf(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", a...)
+}
+
+// hint prints an indented follow-up line to stderr (next-step guidance),
+// after a blank separator line is emitted by the caller.
+func hint(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", a...)
+}
+
 // Run executes the CLI. Returns a process exit code (design §8: non-zero if
 // any entry was skipped or an error occurred).
 func Run(args []string) int {
@@ -37,7 +52,7 @@ func Run(args []string) int {
 	repoRoot := "."
 	if args[0] == "-C" {
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "-C requires a directory")
+			errf("The -C flag requires a directory argument.")
 			return 2
 		}
 		repoRoot = args[1]
@@ -66,13 +81,16 @@ func Run(args []string) int {
 		return cmdHost(cfgPath, rest)
 	case "domain":
 		return cmdDomain(cfgPath, rest)
+	case "dns-host":
+		return cmdDNSHost(cfgPath, rest)
 	case "sync":
 		return cmdSync(repoRoot, cfgPath, rest)
 	case "-h", "--help", "help":
 		usage()
 		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
+		errf("Unknown command %q.", cmd)
+		fmt.Fprintln(os.Stderr)
 		usage()
 		return 2
 	}
@@ -83,7 +101,8 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 	// positional, so split it off first.
 	name, args, ok := leadingName(args)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "add: missing <service> name")
+		errf("add requires a <service> name.")
+		hint("Usage: shd add <service> --fqdn <fqdn> --host <machine> --backend <name:port>")
 		return 2
 	}
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
@@ -94,25 +113,42 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	// Validate required flags BEFORE touching the YAML, so a mistyped command
+	// never persists a half-formed service entry.
+	var missing []string
+	if *fqdn == "" {
+		missing = append(missing, "--fqdn")
+	}
+	if *host == "" {
+		missing = append(missing, "--host")
+	}
+	if *backend == "" {
+		missing = append(missing, "--backend")
+	}
+	if len(missing) > 0 {
+		errf("add is missing required flag(s): %s.", strings.Join(missing, ", "))
+		hint("Usage: shd add %s --fqdn <fqdn> --host <machine> --backend <name:port> [--dns-host <machine>]", name)
+		return 2
+	}
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
 	if _, exists := cfg.Services[name]; exists {
-		fmt.Fprintf(os.Stderr, "add: service %q already exists\n", name)
+		errf("Service %q already exists.", name)
 		return 1
 	}
 	for n, s := range cfg.Services {
 		if s.FQDN == *fqdn {
-			fmt.Fprintf(os.Stderr, "add: fqdn %q already used by %q\n", *fqdn, n)
+			errf("The fqdn %q is already used by service %q.", *fqdn, n)
 			return 1
 		}
 	}
 	cfg.Services[name] = config.Service{FQDN: *fqdn, Host: *host, Backend: *backend, DNSHost: *dnsHost}
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
 	return runSync(repoRoot, cfg, syncpkg.Incremental)
@@ -121,7 +157,8 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	name, args, ok := leadingName(args)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "update: missing <service> name")
+		errf("update requires a <service> name.")
+		hint("Usage: shd update <service> [--fqdn ...] [--host ...] [--backend ...] [--dns-host ...]")
 		return 2
 	}
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
@@ -132,6 +169,15 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	// An update with no field flags is a no-op; tell the user instead of
+	// silently reporting success.
+	changed := 0
+	fs.Visit(func(*flag.Flag) { changed++ })
+	if changed == 0 {
+		errf("Nothing to change for %q.", name)
+		hint("Pass at least one of --fqdn, --host, --backend, or --dns-host.")
+		return 2
+	}
 
 	cfg, code := loadExisting(cfgPath, "update")
 	if cfg == nil {
@@ -139,7 +185,7 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	}
 	svc, exists := cfg.Services[name]
 	if !exists {
-		fmt.Fprintf(os.Stderr, "update: service %q does not exist\n", name)
+		errf("Service %q does not exist.", name)
 		return 1
 	}
 	// Only override fields that were explicitly set on the command line.
@@ -157,7 +203,7 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	})
 	cfg.Services[name] = svc
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
 	return runSync(repoRoot, cfg, syncpkg.Incremental)
@@ -165,7 +211,8 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 
 func cmdRemove(repoRoot, cfgPath string, args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "remove: missing <service> name")
+		errf("remove requires a <service> name.")
+		hint("Usage: shd remove <service>")
 		return 2
 	}
 	name := args[0]
@@ -175,12 +222,12 @@ func cmdRemove(repoRoot, cfgPath string, args []string) int {
 		return code
 	}
 	if _, exists := cfg.Services[name]; !exists {
-		fmt.Fprintf(os.Stderr, "remove: service %q does not exist\n", name)
+		errf("Service %q does not exist.", name)
 		return 1
 	}
 	delete(cfg.Services, name)
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
 
@@ -188,13 +235,13 @@ func cmdRemove(repoRoot, cfgPath string, args []string) int {
 	eng := &syncpkg.Engine{RepoRoot: repoRoot, Manifest: mf}
 	res, err := eng.RemoveService(name)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
 	for _, d := range res.Deleted {
-		fmt.Printf("deleted %s\n", d)
+		fmt.Printf("  - %s\n", d)
 	}
-	fmt.Printf("removed service %q\n", name)
+	fmt.Printf("Removed service %q.\n", name)
 	return 0
 }
 
@@ -206,7 +253,7 @@ func cmdSync(repoRoot, cfgPath string, args []string) int {
 		return 2
 	}
 	if *incremental && *complete {
-		fmt.Fprintln(os.Stderr, "sync: --incremental and --complete are mutually exclusive")
+		errf("The --incremental and --complete flags are mutually exclusive.")
 		return 2
 	}
 	mode := syncpkg.Incremental
@@ -230,27 +277,26 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 
 	res, err := eng.Reconcile(p, mode)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return 1
 	}
 
 	for _, w := range res.Written {
-		fmt.Printf("wrote %s\n", w)
+		fmt.Printf("  ✓ %s\n", w)
 	}
 	for _, d := range res.Deleted {
-		fmt.Printf("deleted %s\n", d)
+		fmt.Printf("  - %s\n", d)
 	}
 
 	synced := len(res.Synced)
 	total := res.Total
-	fmt.Printf("synced %d/%d services", synced, total)
+	fmt.Printf("Synced %d/%d services.\n", synced, total)
 	if len(res.Skipped) > 0 {
-		fmt.Printf("; %d skipped:", len(res.Skipped))
+		fmt.Printf("%d skipped:\n", len(res.Skipped))
 		for _, name := range sortedSkip(res.Skipped) {
-			fmt.Printf(" %s (%s)", name, res.Skipped[name])
+			fmt.Printf("  • %s: %s\n", name, res.Skipped[name])
 		}
 	}
-	fmt.Println()
 
 	if len(res.Skipped) > 0 {
 		return 1
@@ -263,7 +309,7 @@ func loadManifest(repoRoot string, cfg *config.Config) *manifest.Manifest {
 	mfPath := filepath.Join(repoRoot, manifestName)
 	mf, ok := manifest.Load(mfPath)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "warning: manifest unparseable or partial — rebuilding from services.yaml")
+		fmt.Fprintf(os.Stderr, "Warning: %s is unreadable — rebuilding it from %s.\n", manifestName, configName)
 		mf = manifest.Rebuild(mfPath, repoRoot, plan.Build(cfg))
 	}
 	return mf
@@ -291,14 +337,16 @@ func sortedSkip(m map[string]string) []string {
 func loadExisting(cfgPath, command string) (*config.Config, int) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
+		errf("%v", err)
 		return nil, 1
 	}
 	if !cfg.Exists {
-		fmt.Fprintf(os.Stderr, "no %s in this directory — nothing to %s.\n", configName, command)
-		fmt.Fprintln(os.Stderr, "create your first service with:")
-		fmt.Fprintln(os.Stderr, "  shd add <name> --fqdn <fqdn> --host <machine> --backend <name:port>")
-		fmt.Fprintln(os.Stderr, "(or run from the repo root, or use -C <dir>)")
+		errf("No %s in this directory — nothing to %s.", configName, command)
+		fmt.Fprintln(os.Stderr)
+		hint("To create your first service:")
+		hint("  shd add <name> --fqdn <fqdn> --host <machine> --backend <name:port>")
+		fmt.Fprintln(os.Stderr)
+		hint("Or run from the repo root, or pass -C <dir>.")
 		return nil, 1
 	}
 	return cfg, 0
@@ -314,24 +362,31 @@ func leadingName(args []string) (name string, rest []string, ok bool) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `shd — generate split-horizon DNS + Caddy site blocks from services.yaml
+	fmt.Fprint(os.Stderr, `shd — Split-Horizon DNS (Manager)
 
-Operates on services.yaml in the current directory.
+Generates split-horizon DNS records and Caddy site blocks from a declarative
+services.yaml. Operates on the file in the current directory by default.
 
-Usage:
-  shd [-C <dir>] add    <service> --fqdn <f> --host <h> --backend <b> [--dns-host <d>]
-  shd [-C <dir>] update <service> [--fqdn ...] [--host ...] [--backend ...] [--dns-host ...]
-  shd [-C <dir>] remove <service>
-  shd [-C <dir>] sync   [--incremental | --complete]
+Services:
+  shd add    <service> --fqdn <f> --host <h> --backend <b> [--dns-host <d>]
+  shd update <service> [--fqdn ...] [--host ...] [--backend ...] [--dns-host ...]
+  shd remove <service>
+  shd sync   [--incremental | --complete]
 
-  shd [-C <dir>] host   add    <name> --ip <ip> --dir <dir> [--dnsmasq-dir <d>] [--caddy-sites-dir <d>]
-  shd [-C <dir>] host   remove <name>
-  shd [-C <dir>] domain add    <name> --tls-import <snippet>
-  shd [-C <dir>] domain remove <name>
+Building blocks (a service references a host and a domain):
+  shd host   add    <name> --ip <ip> --dir <dir> [--dnsmasq-dir <d>] [--caddy-sites-dir <d>]
+  shd host   remove <name>
+  shd domain add    <name> --tls-import <snippet>
+  shd domain remove <name>
+  shd dns-host set  <name>    Set the default resolver host for new records.
 
-  -C <dir>   run as if shd were started in <dir> (default: current dir)
+Other:
+  shd version
+  shd help
 
-host/domain define the building blocks a service references; remove refuses
-while any service still uses the host or domain.
+Global flags:
+  -C <dir>   Run as if shd were started in <dir> (default: current directory).
+
+Removing a host or domain is refused while any service still references it.
 `)
 }
