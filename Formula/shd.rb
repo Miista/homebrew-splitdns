@@ -5,21 +5,21 @@
 class Shd < Formula
   desc "Generate split-horizon DNS (Pi-hole/dnsmasq) and Caddy site blocks from a declarative services.yaml"
   homepage "https://github.com/Miista/homebrew-shd"
-  version "0.7.0"
+  version "0.8.0"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/Miista/homebrew-shd/releases/download/v0.7.0/shd_0.7.0_darwin_amd64.tar.gz"
-      sha256 "b45ee25be511a3b49cef37d1c6485ece67ec5dbbe32834ab99d27160bf44b907"
+      url "https://github.com/Miista/homebrew-shd/releases/download/v0.8.0/shd_0.8.0_darwin_amd64.tar.gz"
+      sha256 "9d2772e43d6862ec39473eb18db51b205042e268a908ebb5f2df6ddb3ecc1304"
 
       define_method(:install) do
         bin.install "shd"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/Miista/homebrew-shd/releases/download/v0.7.0/shd_0.7.0_darwin_arm64.tar.gz"
-      sha256 "c6f1afb5d759cad32f46ad73794a10260a7ac29897157aac7e935eb42e366b54"
+      url "https://github.com/Miista/homebrew-shd/releases/download/v0.8.0/shd_0.8.0_darwin_arm64.tar.gz"
+      sha256 "2ed07884b997c62b3ab30cd2dac9545c0aad39ae4ba9562f205f62823ca67129"
 
       define_method(:install) do
         bin.install "shd"
@@ -29,15 +29,15 @@ class Shd < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/Miista/homebrew-shd/releases/download/v0.7.0/shd_0.7.0_linux_amd64.tar.gz"
-      sha256 "841eeb3ddc95532eef1c164b81c2ddfb51fafbc8dde82d6268f8564aee9d1205"
+      url "https://github.com/Miista/homebrew-shd/releases/download/v0.8.0/shd_0.8.0_linux_amd64.tar.gz"
+      sha256 "4f6f8a56c00d60699e940f3b19dd9eb1a1aabb45d14317d72cf315395fd4a19f"
       define_method(:install) do
         bin.install "shd"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/Miista/homebrew-shd/releases/download/v0.7.0/shd_0.7.0_linux_arm64.tar.gz"
-      sha256 "24f28bc908932a7205b678722cd697f2b633365023737958cf6c9ec3728cb4ae"
+      url "https://github.com/Miista/homebrew-shd/releases/download/v0.8.0/shd_0.8.0_linux_arm64.tar.gz"
+      sha256 "fcbe74991d39a0bb5b6962015dfe133df85e59c771d8d6ead5d9109010297fdd"
       define_method(:install) do
         bin.install "shd"
       end
