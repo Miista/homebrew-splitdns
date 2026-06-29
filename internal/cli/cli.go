@@ -102,12 +102,12 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 	name, args, ok := leadingName(args)
 	if !ok {
 		errf("add requires a <service> name.")
-		hint("Usage: shd add <service> --fqdn <fqdn> --host <machine> --backend <name:port>")
+		hint("Usage: shd add <service> --fqdn <fqdn> --host <host> --backend <name:port>")
 		return 2
 	}
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fqdn := fs.String("fqdn", "", "service fqdn")
-	host := fs.String("host", "", "machine that runs the service")
+	host := fs.String("host", "", "host that runs the service")
 	backend := fs.String("backend", "", "reverse_proxy upstream name:port")
 	dnsHost := fs.String("dns-host", "", "optional dns_host override")
 	if err := fs.Parse(args); err != nil {
@@ -127,7 +127,7 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 	}
 	if len(missing) > 0 {
 		errf("add is missing required flag(s): %s.", strings.Join(missing, ", "))
-		hint("Usage: shd add %s --fqdn <fqdn> --host <machine> --backend <name:port> [--dns-host <machine>]", name)
+		hint("Usage: shd add %s --fqdn <fqdn> --host <host> --backend <name:port> [--dns-host <host>]", name)
 		return 2
 	}
 
@@ -163,7 +163,7 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	}
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fqdn := fs.String("fqdn", "", "service fqdn")
-	host := fs.String("host", "", "machine that runs the service")
+	host := fs.String("host", "", "host that runs the service")
 	backend := fs.String("backend", "", "reverse_proxy upstream name:port")
 	dnsHost := fs.String("dns-host", "", "dns_host override")
 	if err := fs.Parse(args); err != nil {
@@ -344,7 +344,7 @@ func loadExisting(cfgPath, command string) (*config.Config, int) {
 		errf("No %s in this directory — nothing to %s.", configName, command)
 		fmt.Fprintln(os.Stderr)
 		hint("To create your first service:")
-		hint("  shd add <name> --fqdn <fqdn> --host <machine> --backend <name:port>")
+		hint("  shd add <name> --fqdn <fqdn> --host <host> --backend <name:port>")
 		fmt.Fprintln(os.Stderr)
 		hint("Or run from the repo root, or pass -C <dir>.")
 		return nil, 1

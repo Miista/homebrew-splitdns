@@ -8,11 +8,10 @@ import (
 	"shd/internal/config"
 )
 
-// cmdHost handles `host add|remove`. The schema key stays machines: (design
-// §3); only the command noun is "host". These commands mutate the YAML but do
-// NOT write generated files: machines/domains have no per-machine output of
-// their own, and a run that changes them is followed by sync to regenerate
-// affected services.
+// cmdHost handles `host add|remove`. The command noun matches the schema key
+// `hosts:`. These commands mutate the YAML but do NOT write generated files:
+// hosts/domains have no per-host output of their own, and a run that changes
+// them is followed by sync to regenerate affected services.
 func cmdHost(cfgPath string, args []string) int {
 	if len(args) < 1 {
 		errf("host requires a subcommand.")
@@ -39,8 +38,8 @@ func hostAdd(cfgPath string, args []string) int {
 		return 2
 	}
 	fs := flag.NewFlagSet("host add", flag.ContinueOnError)
-	ip := fs.String("ip", "", "machine LAN IP (required)")
-	dir := fs.String("dir", "", "repo directory for this machine (required)")
+	ip := fs.String("ip", "", "host LAN IP (required)")
+	dir := fs.String("dir", "", "repo directory for this host (required)")
 	dnsmasqDir := fs.String("dnsmasq-dir", "", "override dnsmasq output dir")
 	caddyDir := fs.String("caddy-sites-dir", "", "override caddy sites dir")
 	if err := fs.Parse(args); err != nil {
@@ -64,11 +63,11 @@ func hostAdd(cfgPath string, args []string) int {
 		errf("%v", err)
 		return 1
 	}
-	if _, exists := cfg.Machines[name]; exists {
+	if _, exists := cfg.Hosts[name]; exists {
 		errf("Host %q already exists.", name)
 		return 1
 	}
-	cfg.Machines[name] = config.Machine{
+	cfg.Hosts[name] = config.Host{
 		IP: *ip, Dir: *dir, DnsmasqDir: *dnsmasqDir, CaddySitesDir: *caddyDir,
 	}
 
@@ -100,7 +99,7 @@ func hostRemove(cfgPath string, args []string) int {
 	if cfg == nil {
 		return code
 	}
-	if _, exists := cfg.Machines[name]; !exists {
+	if _, exists := cfg.Hosts[name]; !exists {
 		errf("Host %q does not exist.", name)
 		return 1
 	}
@@ -109,7 +108,7 @@ func hostRemove(cfgPath string, args []string) int {
 		hint("Reassign or remove those services first.")
 		return 1
 	}
-	delete(cfg.Machines, name)
+	delete(cfg.Hosts, name)
 	if err := cfg.Save(); err != nil {
 		errf("%v", err)
 		return 1
@@ -203,7 +202,7 @@ func domainRemove(cfgPath string, args []string) int {
 }
 
 // cmdDNSHost handles `dns-host set <name>` — sets defaults.dns_host, the
-// machine whose dnsmasq receives address= records unless a service overrides
+// host whose dnsmasq receives address= records unless a service overrides
 // it. Without this, a CLI-only bootstrap leaves dns_host unset and every
 // service is skipped.
 func cmdDNSHost(cfgPath string, args []string) int {
@@ -223,7 +222,7 @@ func cmdDNSHost(cfgPath string, args []string) int {
 	if cfg == nil {
 		return code
 	}
-	if _, exists := cfg.Machines[name]; !exists {
+	if _, exists := cfg.Hosts[name]; !exists {
 		errf("Host %q does not exist — add it first with: shd host add %s --ip <ip> --dir <dir>", name, name)
 		return 1
 	}

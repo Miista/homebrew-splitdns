@@ -10,7 +10,7 @@ import (
 // base returns a valid config with one service we can mutate per test.
 func base() *config.Config {
 	return &config.Config{
-		Machines: map[string]config.Machine{
+		Hosts: map[string]config.Host{
 			"resolver": {IP: "192.0.2.1", Dir: "resolver"},
 			"appbox":   {IP: "192.0.2.2", Dir: "appbox"},
 		},

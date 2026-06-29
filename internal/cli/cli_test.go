@@ -9,7 +9,7 @@ import (
 // seed writes a minimal valid services.yaml into dir.
 func seed(t *testing.T, dir string) {
 	t.Helper()
-	content := `machines:
+	content := `hosts:
   resolver: {ip: 192.0.2.1, dir: resolver}
   appbox: {ip: 192.0.2.2, dir: appbox}
 domains:
@@ -88,5 +88,39 @@ func TestRun_SyncReportsSkips(t *testing.T) {
 		"--fqdn", "x.undefined.org", "--host", "resolver", "--backend", "a:1"})
 	if code := Run([]string{"-C", dir, "sync"}); code != 1 {
 		t.Errorf("sync with a skipped entry should exit 1, got %d", code)
+	}
+}
+
+// --- validation guards added in the UX pass ---
+
+func TestRun_AddMissingFlagsDoesNotPersist(t *testing.T) {
+	dir := t.TempDir()
+	if code := Run([]string{"-C", dir, "add", "docs"}); code != 2 {
+		t.Errorf("add with no flags should exit 2, got %d", code)
+	}
+	// Crucially: no services.yaml should have been written.
+	if _, err := os.Stat(filepath.Join(dir, configName)); !os.IsNotExist(err) {
+		t.Error("add with missing flags must not create services.yaml")
+	}
+}
+
+func TestRun_AddPartialFlagsRejected(t *testing.T) {
+	dir := t.TempDir()
+	seed(t, dir)
+	if code := Run([]string{"-C", dir, "add", "docs", "--fqdn", "docs.example.com"}); code != 2 {
+		t.Errorf("add missing --host/--backend should exit 2, got %d", code)
+	}
+	if _, ok := load(t, dir).Services["docs"]; ok {
+		t.Error("partial add must not persist the service")
+	}
+}
+
+func TestRun_UpdateNoOpRejected(t *testing.T) {
+	dir := t.TempDir()
+	seed(t, dir)
+	Run([]string{"-C", dir, "add", "docs",
+		"--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000"})
+	if code := Run([]string{"-C", dir, "update", "docs"}); code != 2 {
+		t.Errorf("update with no field flags should exit 2, got %d", code)
 	}
 }

@@ -65,7 +65,7 @@ func Build(c *config.Config) *Plan {
 		Total:   len(c.Services),
 	}
 
-	machineNames := sortedKeys(c.Machines)
+	hostNames := sortedKeys(c.Hosts)
 
 	// First pass: detect fqdn collisions and filename collisions across the
 	// whole set so both sides of a conflict can be reported (design §7).
@@ -74,7 +74,7 @@ func Build(c *config.Config) *Plan {
 	tentative := map[string][]File{} // svc -> files, before collision pruning
 
 	for name, svc := range c.Services {
-		files, reason := planService(c, name, svc, machineNames)
+		files, reason := planService(c, name, svc, hostNames)
 		if reason != "" {
 			p.Skipped[name] = reason
 			continue
@@ -115,7 +115,7 @@ func Build(c *config.Config) *Plan {
 }
 
 // planService validates one entry and returns its files or a skip reason.
-func planService(c *config.Config, name string, svc config.Service, machineNames []string) ([]File, string) {
+func planService(c *config.Config, name string, svc config.Service, hostNames []string) ([]File, string) {
 	// fqdn well-formed
 	if !fqdnRe.MatchString(svc.FQDN) {
 		return nil, fmt.Sprintf("malformed fqdn %q", svc.FQDN)
@@ -125,22 +125,22 @@ func planService(c *config.Config, name string, svc config.Service, machineNames
 	if !ok {
 		return nil, fmt.Sprintf("fqdn %q matches no domain in %v", svc.FQDN, sortedKeys(c.Domains))
 	}
-	// host machine
-	hostM, ok := c.Machines[svc.Host]
+	// host host
+	hostM, ok := c.Hosts[svc.Host]
 	if !ok {
-		return nil, fmt.Sprintf("unknown host %q — defined machines: %s", svc.Host, strings.Join(machineNames, ", "))
+		return nil, fmt.Sprintf("unknown host %q — defined hosts: %s", svc.Host, strings.Join(hostNames, ", "))
 	}
 	if hostM.IP == "" {
 		return nil, fmt.Sprintf("host %q has no ip", svc.Host)
 	}
-	// dns_host machine
+	// dns_host host
 	dnsHostName := c.DNSHostFor(svc)
 	if dnsHostName == "" {
 		return nil, "no dns_host resolved (set defaults.dns_host or per-service dns_host)"
 	}
-	dnsM, ok := c.Machines[dnsHostName]
+	dnsM, ok := c.Hosts[dnsHostName]
 	if !ok {
-		return nil, fmt.Sprintf("unknown dns_host %q — defined machines: %s", dnsHostName, strings.Join(machineNames, ", "))
+		return nil, fmt.Sprintf("unknown dns_host %q — defined hosts: %s", dnsHostName, strings.Join(hostNames, ", "))
 	}
 	// backend shape
 	if !backendRe.MatchString(svc.Backend) {

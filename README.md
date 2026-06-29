@@ -51,7 +51,7 @@ Bootstrap a usable `services.yaml` entirely from the CLI — no hand-editing req
 ```sh
 cd ~/homelab            # your monorepo checkout
 
-# 1. Declare the machines (the YAML key is `machines:`; the command noun is `host`)
+# 1. Declare the hosts
 shd host add resolver       --ip 192.0.2.1   --dir resolver
 shd host add appbox --ip 192.0.2.2 --dir appbox
 
@@ -123,7 +123,7 @@ shd [-C <dir>] domain remove <name>
 are not preserved — document intent in this README, not in the YAML.
 
 ```yaml
-machines:
+hosts:
   appbox: { ip: 192.0.2.2, dir: appbox }
   resolver:       { ip: 192.0.2.1,   dir: resolver }
 
@@ -146,7 +146,7 @@ Output paths default to `<dir>/pihole/data/dnsmasq.d/generated/<service>.conf` a
 `<dir>/caddy/data/sites/<service>.caddy`. If a machine's layout differs, override per machine:
 
 ```yaml
-machines:
+hosts:
   resolver: { ip: 192.0.2.1, dir: resolver, dnsmasq_dir: pihole/data/dnsmasq.d/generated }
 ```
 
@@ -165,7 +165,7 @@ parsed. A run that skipped anything prints a summary and **exits non-zero**, so 
 can detect partial success:
 
 ```
-synced 11/12 services; 1 skipped: docs (unknown host 'appbx' — defined machines: resolver, appbox)
+synced 11/12 services; 1 skipped: docs (unknown host 'appbx' — defined hosts: resolver, appbox)
 ```
 
 ## Prerequisites (one-time, manual)

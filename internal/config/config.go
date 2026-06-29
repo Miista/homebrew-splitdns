@@ -13,24 +13,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Default output-path segments (design §4, §10). Per-machine config may
+// Default output-path segments (design §4, §10). Per-host config may
 // override these so layout is data, not hardcoded.
 const (
 	DefaultDnsmasqDir    = "pihole/data/dnsmasq.d/generated"
 	DefaultCaddySitesDir = "caddy/data/sites"
 )
 
-// Machine is one host in the homelab, owning a directory in the repo.
-type Machine struct {
+// Host is one host in the homelab, owning a directory in the repo.
+type Host struct {
 	IP  string `yaml:"ip"`
 	Dir string `yaml:"dir"`
-	// Optional per-machine path overrides (design §10).
+	// Optional per-host path overrides (design §10).
 	DnsmasqDir    string `yaml:"dnsmasq_dir,omitempty"`
 	CaddySitesDir string `yaml:"caddy_sites_dir,omitempty"`
 }
 
 // ResolvedDnsmasqDir returns the dnsmasq output dir, applying the default.
-func (m Machine) ResolvedDnsmasqDir() string {
+func (m Host) ResolvedDnsmasqDir() string {
 	if m.DnsmasqDir != "" {
 		return m.DnsmasqDir
 	}
@@ -38,7 +38,7 @@ func (m Machine) ResolvedDnsmasqDir() string {
 }
 
 // ResolvedCaddySitesDir returns the Caddy sites output dir, applying the default.
-func (m Machine) ResolvedCaddySitesDir() string {
+func (m Host) ResolvedCaddySitesDir() string {
 	if m.CaddySitesDir != "" {
 		return m.CaddySitesDir
 	}
@@ -65,7 +65,7 @@ type Service struct {
 
 // Config is the in-memory representation of services.yaml.
 type Config struct {
-	Machines map[string]Machine `yaml:"machines"`
+	Hosts    map[string]Host    `yaml:"hosts"`
 	Domains  map[string]Domain  `yaml:"domains"`
 	Defaults Defaults           `yaml:"defaults"`
 	Services map[string]Service `yaml:"services"`
@@ -85,7 +85,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			c := &Config{
-				Machines: map[string]Machine{},
+				Hosts:    map[string]Host{},
 				Domains:  map[string]Domain{},
 				Services: map[string]Service{},
 				Exists:   false,
@@ -99,8 +99,8 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if c.Machines == nil {
-		c.Machines = map[string]Machine{}
+	if c.Hosts == nil {
+		c.Hosts = map[string]Host{}
 	}
 	if c.Domains == nil {
 		c.Domains = map[string]Domain{}
@@ -130,8 +130,8 @@ func (c *Config) DNSHostFor(s Service) string {
 	return c.Defaults.DNSHost
 }
 
-// ServicesUsingHost returns the names of services that reference machine
-// `name` as their host or resolved dns_host (sorted). A machine is also
+// ServicesUsingHost returns the names of services that reference host
+// `name` as their host or resolved dns_host (sorted). A host is also
 // considered referenced if it is the defaults.dns_host and any service relies
 // on that default.
 func (c *Config) ServicesUsingHost(name string) []string {

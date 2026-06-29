@@ -48,7 +48,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "services.yaml")
 
 	c, _ := Load(path)
-	c.Machines["resolver"] = Machine{IP: "192.0.2.1", Dir: "resolver"}
+	c.Hosts["resolver"] = Host{IP: "192.0.2.1", Dir: "resolver"}
 	c.Domains["example.com"] = Domain{TLSImport: "tls_example_com"}
 	c.Defaults.DNSHost = "resolver"
 	c.Services["docs"] = Service{FQDN: "docs.example.com", Host: "resolver", Backend: "paperless:8000"}
@@ -60,8 +60,8 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if c2.Machines["resolver"].IP != "192.0.2.1" {
-		t.Errorf("machine not round-tripped: %+v", c2.Machines["resolver"])
+	if c2.Hosts["resolver"].IP != "192.0.2.1" {
+		t.Errorf("host not round-tripped: %+v", c2.Hosts["resolver"])
 	}
 	if c2.Services["docs"].Backend != "paperless:8000" {
 		t.Errorf("service not round-tripped: %+v", c2.Services["docs"])
@@ -72,7 +72,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 }
 
 func TestResolvedDirs_Defaults(t *testing.T) {
-	m := Machine{Dir: "resolver"}
+	m := Host{Dir: "resolver"}
 	if got := m.ResolvedDnsmasqDir(); got != DefaultDnsmasqDir {
 		t.Errorf("dnsmasq default: got %q want %q", got, DefaultDnsmasqDir)
 	}
@@ -82,7 +82,7 @@ func TestResolvedDirs_Defaults(t *testing.T) {
 }
 
 func TestResolvedDirs_Override(t *testing.T) {
-	m := Machine{Dir: "resolver", DnsmasqDir: "custom/dns", CaddySitesDir: "custom/caddy"}
+	m := Host{Dir: "resolver", DnsmasqDir: "custom/dns", CaddySitesDir: "custom/caddy"}
 	if got := m.ResolvedDnsmasqDir(); got != "custom/dns" {
 		t.Errorf("dnsmasq override ignored: %q", got)
 	}

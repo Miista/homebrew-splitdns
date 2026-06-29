@@ -38,7 +38,7 @@ and is unimportant. The file is machine-owned; human comments are not preserved 
 intent in a README, not in the YAML).
 
 ```yaml
-machines:
+hosts:
   appbox: { ip: 192.0.2.2, dir: appbox }
   resolver:       { ip: 192.0.2.1,   dir: resolver }
 
@@ -58,7 +58,7 @@ services:
 ```
 
 Notes:
-- `host_ip` for the A record is **looked up** from `machines[<host>].ip`. The IP is declared
+- `host_ip` for the A record is **looked up** from `hosts[<host>].ip`. The IP is declared
   once per machine and never repeated in service entries.
 - `dns_host` defaults to `defaults.dns_host` and may be overridden per service. **Do not assume
   the DNS host is fixed** — route each record to its entry's resolved `dns_host`.
@@ -70,7 +70,7 @@ Notes:
 The tool owns dedicated subdirectories. Filenames are `<service>.<ext>`, human-readable.
 
 ### 4.1 DNS record
-Path: `<machines[dns_host].dir>/pihole/data/dnsmasq.d/generated/<service>.conf`
+Path: `<hosts[dns_host].dir>/pihole/data/dnsmasq.d/generated/<service>.conf`
 *(adjust the middle path segment to match the real repo layout — see §10.)*
 
 Content:
@@ -80,7 +80,7 @@ address=/docs.example.com/192.0.2.2
 address=/docs.example.com/::
 ```
 
-- The A record points at `machines[host].ip` (the machine that runs the service), **not**
+- The A record points at `hosts[host].ip` (the machine that runs the service), **not**
   the dns_host.
 - The `address=/<fqdn>/::` line is **always emitted** to suppress the public AAAA record.
   This is structural, not optional: without it, IPv6-preferring clients resolve the public
@@ -88,7 +88,7 @@ address=/docs.example.com/::
   (loopback) is a bug — never emit `::1`.
 
 ### 4.2 Caddy site block
-Path: `<machines[host].dir>/caddy/data/sites/<service>.caddy`
+Path: `<hosts[host].dir>/caddy/data/sites/<service>.caddy`
 *(adjust to match real layout — see §10.)*
 
 Content:
@@ -169,10 +169,9 @@ file remains the §7 globally-fatal case; missing ≠ malformed.)
 
 ### 6.2 Building-block commands (host, domain)
 
-The `machines` and `domains` maps a service references (§3) are managed by their own noun-first
+The `hosts` and `domains` maps a service references (§3) are managed by their own noun-first
 subcommands, so a usable `services.yaml` can be bootstrapped entirely via the CLI rather than by
-hand-editing. **The schema key for hosts remains `machines:`** (§3); only the command noun is
-`host`.
+hand-editing. The command noun `host` matches the schema key `hosts:`.
 
 ```
 shd [-C <dir>] host   add    <name> --ip <ip> --dir <dir> [--dnsmasq-dir <d>] [--caddy-sites-dir <d>]
@@ -222,7 +221,7 @@ Manifest unparseable is **not** fatal → rebuild (§5) and continue.
 - **Collect all errors and report them together** at the end of a run. Do not fail on the first
   error and force a fix-rerun-discover-next treadmill.
 - Print a summary line, e.g.:
-  `synced 11/12 services; 1 skipped: docs (unknown host 'appbx' — defined machines: resolver, appbox)`
+  `synced 11/12 services; 1 skipped: docs (unknown host 'appbx' — defined hosts: resolver, appbox)`
 - **Exit non-zero if any entry was skipped or any error occurred**, so a deploy script can
   detect partial success. A silently-incomplete sync must be both loud in output and detectable
   in the exit code.
@@ -243,7 +242,7 @@ output paths from per-machine config so layout is data, not hardcoded. Example e
 schema if layouts differ per machine:
 
 ```yaml
-machines:
+hosts:
   resolver:       { ip: 192.0.2.1,   dir: resolver,       dnsmasq_dir: pihole/data/dnsmasq.d/generated }
   appbox: { ip: 192.0.2.2, dir: appbox, caddy_sites_dir: caddy/data/sites }
 ```

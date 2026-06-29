@@ -17,15 +17,15 @@ func load(t *testing.T, dir string) *config.Config {
 	return c
 }
 
-func TestHostAdd_CreatesMachine(t *testing.T) {
+func TestHostAdd_CreatesHost(t *testing.T) {
 	dir := t.TempDir()
 	code := Run([]string{"-C", dir, "host", "add", "resolver", "--ip", "192.0.2.1", "--dir", "resolver"})
 	if code != 0 {
 		t.Fatalf("host add should exit 0, got %d", code)
 	}
 	c := load(t, dir)
-	if c.Machines["resolver"].IP != "192.0.2.1" || c.Machines["resolver"].Dir != "resolver" {
-		t.Errorf("machine not stored: %+v", c.Machines["resolver"])
+	if c.Hosts["resolver"].IP != "192.0.2.1" || c.Hosts["resolver"].Dir != "resolver" {
+		t.Errorf("host not stored: %+v", c.Hosts["resolver"])
 	}
 }
 
@@ -54,7 +54,7 @@ func TestHostRemove_RefusesWhenReferenced(t *testing.T) {
 	if code := Run([]string{"-C", dir, "host", "remove", "appbox"}); code != 1 {
 		t.Errorf("removing referenced host should exit 1, got %d", code)
 	}
-	if _, ok := load(t, dir).Machines["appbox"]; !ok {
+	if _, ok := load(t, dir).Hosts["appbox"]; !ok {
 		t.Error("referenced host should not have been removed")
 	}
 
@@ -70,7 +70,7 @@ func TestHostRemove_Unreferenced(t *testing.T) {
 	if code := Run([]string{"-C", dir, "host", "remove", "spare"}); code != 0 {
 		t.Errorf("removing unreferenced host should exit 0, got %d", code)
 	}
-	if _, ok := load(t, dir).Machines["spare"]; ok {
+	if _, ok := load(t, dir).Hosts["spare"]; ok {
 		t.Error("host should have been removed")
 	}
 }
@@ -116,5 +116,50 @@ func TestBootstrap_ViaCLIOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "appbox", "caddy/data/sites/docs.caddy")); err != nil {
 		t.Errorf("bootstrap should produce a generated caddy site: %v", err)
+	}
+}
+
+// --- dns_host bootstrap + dns-host set command ---
+
+func TestHostAdd_FirstHostSetsDefaultDNSHost(t *testing.T) {
+	dir := t.TempDir()
+	Run([]string{"-C", dir, "host", "add", "appbox", "--ip", "192.0.2.2", "--dir", "appbox"})
+	if got := load(t, dir).Defaults.DNSHost; got != "appbox" {
+		t.Errorf("first host should set default dns_host to itself, got %q", got)
+	}
+	// A second host must NOT overwrite the established default.
+	Run([]string{"-C", dir, "host", "add", "resolver", "--ip", "192.0.2.1", "--dir", "resolver"})
+	if got := load(t, dir).Defaults.DNSHost; got != "appbox" {
+		t.Errorf("second host should not change default dns_host, got %q", got)
+	}
+}
+
+func TestDNSHostSet(t *testing.T) {
+	dir := t.TempDir()
+	seed(t, dir) // defines resolver + appbox, default dns_host resolver
+	if code := Run([]string{"-C", dir, "dns-host", "set", "appbox"}); code != 0 {
+		t.Fatalf("dns-host set to existing host should exit 0, got %d", code)
+	}
+	if got := load(t, dir).Defaults.DNSHost; got != "appbox" {
+		t.Errorf("dns_host not updated, got %q", got)
+	}
+}
+
+func TestDNSHostSet_UnknownHostRejected(t *testing.T) {
+	dir := t.TempDir()
+	seed(t, dir)
+	if code := Run([]string{"-C", dir, "dns-host", "set", "ghost"}); code != 1 {
+		t.Errorf("dns-host set to unknown host should exit 1, got %d", code)
+	}
+}
+
+func TestDNSHostSet_MissingArgs(t *testing.T) {
+	dir := t.TempDir()
+	seed(t, dir)
+	if code := Run([]string{"-C", dir, "dns-host"}); code != 2 {
+		t.Errorf("dns-host with no subcommand should exit 2, got %d", code)
+	}
+	if code := Run([]string{"-C", dir, "dns-host", "set"}); code != 2 {
+		t.Errorf("dns-host set with no name should exit 2, got %d", code)
 	}
 }
