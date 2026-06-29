@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"sdm/internal/cli"
+	"shd/internal/cli"
 )
 
 func main() {

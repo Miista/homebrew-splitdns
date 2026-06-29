@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"sdm/internal/config"
+	"shd/internal/config"
 )
 
 // base returns a valid config with one service we can mutate per test.

@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"sdm/internal/config"
-	"sdm/internal/render"
+	"shd/internal/config"
+	"shd/internal/render"
 )
 
 // File is one desired output file.

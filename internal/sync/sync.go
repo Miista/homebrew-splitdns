@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"sort"
 
-	"sdm/internal/config"
-	"sdm/internal/manifest"
-	"sdm/internal/plan"
+	"shd/internal/config"
+	"shd/internal/manifest"
+	"shd/internal/plan"
 )
 
 // Mode selects reconcile behavior.

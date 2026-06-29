@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"sdm/internal/config"
+	"shd/internal/config"
 )
 
 func load(t *testing.T, dir string) *config.Config {
