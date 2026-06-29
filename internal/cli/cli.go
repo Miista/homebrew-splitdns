@@ -280,6 +280,20 @@ func cmdSync(repoRoot, cfgPath string, args []string) int {
 // runSync builds the plan, reconciles, prints a summary, and returns the exit
 // code per design §8.
 func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
+	// Pre-flight: if any service relies on a default dns_host that isn't set,
+	// refuse the whole sync with one clear pointer rather than silently
+	// skipping every affected service.
+	if cfg.Defaults.DNSHost == "" {
+		for _, svc := range cfg.Services {
+			if svc.DNSHost == "" {
+				errf("No default dns_host is set, so DNS records can't be routed.")
+				hint("Set the resolver host with: shd dns-host set <name>")
+				hint("(or give individual services a --dns-host override.)")
+				return 1
+			}
+		}
+	}
+
 	p := plan.Build(cfg)
 	mf := loadManifest(repoRoot, cfg)
 	eng := &syncpkg.Engine{RepoRoot: repoRoot, Manifest: mf}

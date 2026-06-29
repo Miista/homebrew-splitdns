@@ -19,6 +19,7 @@ func load(t *testing.T, dir string) *config.Config {
 
 func TestHostAdd_CreatesHost(t *testing.T) {
 	dir := t.TempDir()
+	mkdirs(t, dir, "resolver")
 	code := Run([]string{"-C", dir, "host", "add", "resolver", "--ip", "192.0.2.1", "--dir", "resolver"})
 	if code != 0 {
 		t.Fatalf("host add should exit 0, got %d", code)
@@ -66,6 +67,7 @@ func TestHostRemove_RefusesWhenReferenced(t *testing.T) {
 
 func TestHostRemove_Unreferenced(t *testing.T) {
 	dir := t.TempDir()
+	mkdirs(t, dir, "spare")
 	Run([]string{"-C", dir, "host", "add", "spare", "--ip", "10.0.9.9", "--dir", "spare"})
 	if code := Run([]string{"-C", dir, "host", "remove", "spare"}); code != 0 {
 		t.Errorf("removing unreferenced host should exit 0, got %d", code)
@@ -103,6 +105,7 @@ func TestDomainRemove_RefusesWhenReferenced(t *testing.T) {
 // End-to-end bootstrap entirely via CLI: host -> domain -> service -> sync.
 func TestBootstrap_ViaCLIOnly(t *testing.T) {
 	dir := t.TempDir()
+	mkdirs(t, dir, "appbox", "resolver")
 	steps := [][]string{
 		{"-C", dir, "host", "add", "appbox", "--ip", "192.0.2.2", "--dir", "appbox"},
 		{"-C", dir, "host", "add", "resolver", "--ip", "192.0.2.1", "--dir", "resolver"},
@@ -121,16 +124,43 @@ func TestBootstrap_ViaCLIOnly(t *testing.T) {
 
 // --- dns_host bootstrap + dns-host set command ---
 
-func TestHostAdd_FirstHostSetsDefaultDNSHost(t *testing.T) {
+// host add must NOT auto-set defaults.dns_host (that magic was removed in
+// favor of an explicit dns-host set + a sync-time refusal).
+func TestHostAdd_DoesNotSetDefaultDNSHost(t *testing.T) {
 	dir := t.TempDir()
+	mkdirs(t, dir, "appbox")
 	Run([]string{"-C", dir, "host", "add", "appbox", "--ip", "192.0.2.2", "--dir", "appbox"})
-	if got := load(t, dir).Defaults.DNSHost; got != "appbox" {
-		t.Errorf("first host should set default dns_host to itself, got %q", got)
+	if got := load(t, dir).Defaults.DNSHost; got != "" {
+		t.Errorf("host add should not set default dns_host, got %q", got)
 	}
-	// A second host must NOT overwrite the established default.
-	Run([]string{"-C", dir, "host", "add", "resolver", "--ip", "192.0.2.1", "--dir", "resolver"})
-	if got := load(t, dir).Defaults.DNSHost; got != "appbox" {
-		t.Errorf("second host should not change default dns_host, got %q", got)
+}
+
+// host add must refuse a --dir that doesn't exist in the repo (typo guard).
+func TestHostAdd_MissingDirRejected(t *testing.T) {
+	dir := t.TempDir()
+	if code := Run([]string{"-C", dir, "host", "add", "appbox", "--ip", "192.0.2.2", "--dir", "nope"}); code != 1 {
+		t.Errorf("host add with nonexistent dir should exit 1, got %d", code)
+	}
+	if _, ok := load(t, dir).Hosts["appbox"]; ok {
+		t.Error("host with bad dir must not be persisted")
+	}
+}
+
+// sync must refuse when no dns_host is resolvable, rather than skip silently.
+func TestSync_RefusesWithoutDNSHost(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "appbox")
+	Run([]string{"-C", dir, "host", "add", "appbox", "--ip", "192.0.2.2", "--dir", "appbox"})
+	Run([]string{"-C", dir, "domain", "add", "example.com", "--tls-import", "tls_example_com"})
+	// add triggers a sync; with no dns_host set it must refuse (exit 1).
+	if code := Run([]string{"-C", dir, "add", "docs",
+		"--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000"}); code != 1 {
+		t.Errorf("sync without dns_host should exit 1, got %d", code)
+	}
+	// After setting it, sync succeeds.
+	Run([]string{"-C", dir, "dns-host", "set", "appbox"})
+	if code := Run([]string{"-C", dir, "sync"}); code != 0 {
+		t.Errorf("sync after dns-host set should exit 0, got %d", code)
 	}
 }
 

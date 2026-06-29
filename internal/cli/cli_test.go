@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+// mkdirs creates host directories inside the temp repo so `host add` (which
+// now requires --dir to exist) succeeds.
+func mkdirs(t *testing.T, root string, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		if err := os.MkdirAll(filepath.Join(root, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // seed writes a minimal valid services.yaml into dir.
 func seed(t *testing.T, dir string) {
 	t.Helper()

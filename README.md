@@ -51,18 +51,21 @@ Bootstrap a usable `services.yaml` entirely from the CLI — no hand-editing req
 ```sh
 cd ~/homelab            # your monorepo checkout
 
-# 1. Declare the hosts
-shd host add resolver       --ip 192.0.2.1   --dir resolver
-shd host add appbox --ip 192.0.2.2 --dir appbox
+# 1. Declare the hosts (--dir must already exist in the repo)
+shd host add resolver --ip 192.0.2.1 --dir resolver
+shd host add appbox   --ip 192.0.2.2 --dir appbox
 
-# 2. Declare the domains and the Caddy tls snippet each one imports
+# 2. Choose the default resolver host (whose dnsmasq receives the records)
+shd dns-host set resolver
+
+# 3. Declare the domains and the Caddy tls snippet each one imports
 shd domain add example.com --tls-import tls_example_com
 shd domain add example.net --tls-import tls_example_net
 
-# 3. Add a service (mutates YAML, then syncs)
+# 4. Add a service (mutates YAML, then syncs)
 shd add docs --fqdn docs.example.com --host appbox --backend paperless:8000
 
-# 4. Re-generate everything any time (e.g. after a git pull)
+# 5. Re-generate everything any time (e.g. after a git pull)
 shd sync
 ```
 

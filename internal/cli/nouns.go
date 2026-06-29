@@ -3,6 +3,8 @@ package cli
 import (
 	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"shd/internal/config"
@@ -58,6 +60,16 @@ func hostAdd(cfgPath string, args []string) int {
 		return 2
 	}
 
+	// The host's directory is its existing home in the repo (where its compose
+	// and config already live); shd only adds DNS/Caddy artifacts to a real
+	// machine. A --dir that doesn't exist is always a typo, so refuse it.
+	repoRoot := filepath.Dir(cfgPath)
+	if info, err := os.Stat(filepath.Join(repoRoot, *dir)); err != nil || !info.IsDir() {
+		errf("Directory %q does not exist in the repo.", *dir)
+		hint("Create the host's directory first, or check the --dir value for a typo.")
+		return 1
+	}
+
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		errf("%v", err)
@@ -70,21 +82,11 @@ func hostAdd(cfgPath string, args []string) int {
 	cfg.Hosts[name] = config.Host{
 		IP: *ip, Dir: *dir, DnsmasqDir: *dnsmasqDir, CaddySitesDir: *caddyDir,
 	}
-
-	// First host bootstraps the default dns_host so services resolve without a
-	// manual edit; tell the user and how to change it.
-	setDefault := cfg.Defaults.DNSHost == ""
-	if setDefault {
-		cfg.Defaults.DNSHost = name
-	}
 	if err := cfg.Save(); err != nil {
 		errf("%v", err)
 		return 1
 	}
 	fmt.Printf("Added host %q (%s, dir %s).\n", name, *ip, *dir)
-	if setDefault {
-		fmt.Printf("Set default dns_host to %q. Change it with: shd dns-host set <name>\n", name)
-	}
 	return 0
 }
 

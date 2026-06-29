@@ -136,7 +136,7 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 	// dns_host host
 	dnsHostName := c.DNSHostFor(svc)
 	if dnsHostName == "" {
-		return nil, "no dns_host resolved (set defaults.dns_host or per-service dns_host)"
+		return nil, "no dns_host set — run 'shd dns-host set <name>' or pass --dns-host"
 	}
 	dnsM, ok := c.Hosts[dnsHostName]
 	if !ok {
