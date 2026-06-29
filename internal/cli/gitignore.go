@@ -11,11 +11,8 @@ import (
 	"shd/internal/plan"
 )
 
-// warnIfIgnored checks every path the plan would write and, if any are
-// gitignored, prints a warning to stderr with the per-host .gitignore lines to
-// add. shd does not edit .gitignore itself — that's the user's file. Silent
-// when nothing is ignored or the check can't run (git absent / not a repo).
-func warnIfIgnored(repoRoot string, p *plan.Plan) {
+// planPaths returns the unique repo-relative paths a plan would write.
+func planPaths(p *plan.Plan) []string {
 	var paths []string
 	seen := map[string]bool{}
 	for _, files := range p.Files {
@@ -26,22 +23,43 @@ func warnIfIgnored(repoRoot string, p *plan.Plan) {
 			}
 		}
 	}
-	ignored, ok := ignoredPaths(repoRoot, paths)
+	return paths
+}
+
+// warnIfIgnored prints a SHORT one-line warning to stderr if any of the plan's
+// output paths are gitignored (they'd generate but never commit/deploy). It
+// fires every run while the problem persists — a standing deploy hazard should
+// stay visible — and points at `shd doctor` for the full file list + fix.
+// Silent when nothing is ignored or the check can't run (git absent / no repo).
+func warnIfIgnored(repoRoot string, p *plan.Plan) {
+	ignored, ok := ignoredPaths(repoRoot, planPaths(p))
 	if !ok || len(ignored) == 0 {
 		return
 	}
+	noun := plural(len(ignored), "file")
+	verb := "is"
+	if len(ignored) != 1 {
+		verb = "are"
+	}
+	fmt.Fprintf(os.Stderr,
+		"Warning: %d generated %s %s gitignored and won't deploy. Run 'shd doctor' for the fix.\n",
+		len(ignored), noun, verb)
+}
 
-	fmt.Fprintf(os.Stderr, "Warning: %d generated %s ignored by git — they won't be committed or deployed:\n",
+// printIgnoreDetail prints the full report: the ignored paths and the per-host
+// .gitignore negation lines to add. Used by `shd doctor`.
+func printIgnoreDetail(ignored []string) {
+	fmt.Printf("%d generated %s ignored by git — they won't be committed or deployed:\n",
 		len(ignored), plural(len(ignored), "file"))
 	for _, p := range ignored {
-		fmt.Fprintf(os.Stderr, "  %s\n", p)
+		fmt.Printf("  %s\n", p)
 	}
-	fmt.Fprintln(os.Stderr, "\nAdd these lines to un-ignore them (shd won't edit .gitignore for you):")
+	fmt.Println("\nAdd these lines to un-ignore them (shd won't edit .gitignore for you):")
 	sugg := unignoreSuggestions(ignored)
 	for _, host := range sortedKeysOf(sugg) {
-		fmt.Fprintf(os.Stderr, "  # in %s/.gitignore\n", host)
+		fmt.Printf("  # in %s/.gitignore\n", host)
 		for _, rule := range sugg[host] {
-			fmt.Fprintf(os.Stderr, "  %s\n", rule)
+			fmt.Printf("  %s\n", rule)
 		}
 	}
 }
@@ -57,17 +75,7 @@ func cmdDoctor(cfgPath string, args []string) int {
 	}
 	p := plan.Build(cfg)
 
-	var paths []string
-	seen := map[string]bool{}
-	for _, files := range p.Files {
-		for _, f := range files {
-			if !seen[f.Path] {
-				seen[f.Path] = true
-				paths = append(paths, f.Path)
-			}
-		}
-	}
-	ignored, ok := ignoredPaths(repoRoot, paths)
+	ignored, ok := ignoredPaths(repoRoot, planPaths(p))
 	if !ok {
 		fmt.Println("Skipped gitignore check (git not available or not a repository).")
 		return 0
@@ -76,7 +84,7 @@ func cmdDoctor(cfgPath string, args []string) int {
 		fmt.Println("✓ No generated files are gitignored.")
 		return 0
 	}
-	warnIfIgnored(repoRoot, p)
+	printIgnoreDetail(ignored)
 	return 1
 }
 
