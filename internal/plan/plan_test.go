@@ -15,8 +15,8 @@ func base() *config.Config {
 			"appbox":   {IP: "192.0.2.2", Dir: "appbox"},
 		},
 		Domains: map[string]config.Domain{
-			"example.com": {TLSImport: "tls_example_com"},
-			"example.net": {TLSImport: "tls_example_net"},
+			"example.com": {},
+			"example.net": {},
 		},
 		Defaults: config.Defaults{DNSHost: "resolver"},
 		Services: map[string]config.Service{},
@@ -105,14 +105,16 @@ func TestBuild_FQDNCollision_FailsBoth(t *testing.T) {
 	if _, ok := p.Skipped["b"]; !ok {
 		t.Error("service b should be skipped on fqdn collision")
 	}
-	if len(p.Files) != 0 {
-		t.Errorf("no files should be produced on collision: %+v", p.Files)
+	for k := range p.Files {
+		if !IsDomainOwner(k) {
+			t.Errorf("no service files should be produced on collision, got %q: %+v", k, p.Files[k])
+		}
 	}
 }
 
 func TestBuild_LongestDomainSuffixWins(t *testing.T) {
 	c := base()
-	c.Domains["sub.example.com"] = config.Domain{TLSImport: "tls_sub"}
+	c.Domains["sub.example.com"] = config.Domain{}
 	c.Services["s"] = config.Service{FQDN: "a.sub.example.com", Host: "resolver", Backend: "x:1"}
 
 	p := Build(c)

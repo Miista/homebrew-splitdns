@@ -24,7 +24,7 @@ func seed(t *testing.T, dir string) {
   resolver: {ip: 192.0.2.1, dir: resolver}
   appbox: {ip: 192.0.2.2, dir: appbox}
 domains:
-  example.com: {tls_import: tls_example_com}
+  example.com: {}
 defaults:
   dns_host: resolver
 services: {}

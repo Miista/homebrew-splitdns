@@ -103,11 +103,11 @@ func TestHostRemove_Unreferenced(t *testing.T) {
 
 func TestDomainAdd_CreatesDomain(t *testing.T) {
 	dir := t.TempDir()
-	code := Run([]string{"-C", dir, "domain", "add", "example.com", "--tls-import", "tls_example_com"})
+	code := Run([]string{"-C", dir, "domain", "add", "example.com"})
 	if code != 0 {
 		t.Fatalf("domain add should exit 0, got %d", code)
 	}
-	if load(t, dir).Domains["example.com"].TLSImport != "tls_example_com" {
+	if _, ok := load(t, dir).Domains["example.com"]; !ok {
 		t.Error("domain not stored")
 	}
 }
@@ -133,7 +133,7 @@ func TestBootstrap_ViaCLIOnly(t *testing.T) {
 	steps := [][]string{
 		{"-C", dir, "host", "add", "appbox", "192.0.2.2"},
 		{"-C", dir, "host", "add", "resolver", "192.0.2.1"},
-		{"-C", dir, "domain", "add", "example.com", "--tls-import", "tls_example_com"},
+		{"-C", dir, "domain", "add", "example.com"},
 		{"-C", dir, "add", "docs", "--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000", "--dns-host", "resolver"},
 	}
 	for _, s := range steps {
@@ -176,7 +176,7 @@ func TestSync_RefusesWithoutDNSHost(t *testing.T) {
 	dir := t.TempDir()
 	mkdirs(t, dir, "appbox")
 	Run([]string{"-C", dir, "host", "add", "appbox", "192.0.2.2"})
-	Run([]string{"-C", dir, "domain", "add", "example.com", "--tls-import", "tls_example_com"})
+	Run([]string{"-C", dir, "domain", "add", "example.com"})
 	// add triggers a sync; with no dns_host set it must refuse (exit 1).
 	if code := Run([]string{"-C", dir, "add", "docs",
 		"--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000"}); code != 1 {
@@ -242,5 +242,52 @@ func TestServiceRemove_NonexistentIsIdempotent(t *testing.T) {
 	seed(t, dir)
 	if code := Run([]string{"-C", dir, "remove", "ghost"}); code != 0 {
 		t.Errorf("removing nonexistent service should exit 0, got %d", code)
+	}
+}
+
+// TLS snippets are generated per (host × domain). Removing a host must let
+// sync --complete GC that host's now-orphaned snippet, even though the domain
+// (its manifest owner) still exists — the bug was per-file shrinkage of a
+// surviving owner.
+func TestSyncComplete_GCsTLSAfterHostRemoval(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox", "spare")
+	for _, h := range [][]string{{"resolver", "192.0.2.1"}, {"appbox", "192.0.2.2"}, {"spare", "192.0.2.9"}} {
+		Run([]string{"-C", dir, "host", "add", h[0], h[1]})
+	}
+	Run([]string{"-C", dir, "dns-host", "set", "resolver"})
+	Run([]string{"-C", dir, "domain", "add", "example.com"})
+	Run([]string{"-C", dir, "sync"})
+
+	spareTLS := filepath.Join(dir, "spare", "caddy/data/tls/tls_example_com.caddy")
+	if _, err := os.Stat(spareTLS); err != nil {
+		t.Fatalf("spare's tls snippet should exist after sync: %v", err)
+	}
+
+	Run([]string{"-C", dir, "host", "remove", "spare"})
+	if code := Run([]string{"-C", dir, "sync", "--complete"}); code != 0 {
+		t.Fatalf("sync --complete should exit 0, got %d", code)
+	}
+	if _, err := os.Stat(spareTLS); !os.IsNotExist(err) {
+		t.Error("spare's tls snippet should be GC'd after host removal + sync --complete")
+	}
+	// The surviving hosts' snippets must remain.
+	if _, err := os.Stat(filepath.Join(dir, "appbox", "caddy/data/tls/tls_example_com.caddy")); err != nil {
+		t.Error("surviving host's tls snippet must not be deleted")
+	}
+}
+
+// Domain removal GC's all its snippets across every host.
+func TestSyncComplete_GCsTLSAfterDomainRemoval(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver")
+	Run([]string{"-C", dir, "host", "add", "resolver", "192.0.2.1"})
+	Run([]string{"-C", dir, "dns-host", "set", "resolver"})
+	Run([]string{"-C", dir, "domain", "add", "example.com"})
+	Run([]string{"-C", dir, "sync"})
+	Run([]string{"-C", dir, "domain", "remove", "example.com"})
+	Run([]string{"-C", dir, "sync", "--complete"})
+	if _, err := os.Stat(filepath.Join(dir, "resolver", "caddy/data/tls/tls_example_com.caddy")); !os.IsNotExist(err) {
+		t.Error("removed domain's tls snippet should be GC'd")
 	}
 }

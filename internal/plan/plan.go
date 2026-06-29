@@ -111,6 +111,23 @@ func Build(c *config.Config) *Plan {
 	for name, files := range tentative {
 		p.Files[name] = files
 	}
+
+	// TLS snippets are generated independently of services: every managed
+	// domain gets its (tls_<domain>) snippet on every host, because the acme
+	// pipeline already pushes every cert to every host. Each domain owns its
+	// snippets under a synthetic manifest key so GC tracks them per domain,
+	// not per service.
+	for dom := range c.Domains {
+		owner := domainOwner(dom)
+		var files []File
+		for hostName, h := range c.Hosts {
+			path := filepath.Join(h.ResolvedDir(hostName), config.DefaultCaddyTLSDir, render.TLSSnippetName(dom)+".caddy")
+			files = append(files, File{Path: path, Content: render.TLSSnippet(dom)})
+		}
+		if len(files) > 0 {
+			p.Files[owner] = files
+		}
+	}
 	return p
 }
 
@@ -120,11 +137,12 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 	if !fqdnRe.MatchString(svc.FQDN) {
 		return nil, fmt.Sprintf("malformed fqdn %q", svc.FQDN)
 	}
-	// domain suffix -> tls_import
-	tlsImport, ok := matchDomain(c, svc.FQDN)
+	// fqdn must match a managed domain; the tls snippet name is derived from it.
+	domain, ok := matchDomain(c, svc.FQDN)
 	if !ok {
 		return nil, fmt.Sprintf("fqdn %q matches no domain in %v", svc.FQDN, sortedKeys(c.Domains))
 	}
+	tlsImport := render.TLSSnippetName(domain)
 	// host host
 	hostM, ok := c.Hosts[svc.Host]
 	if !ok {
@@ -156,8 +174,19 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 	}, ""
 }
 
-// matchDomain selects the tls_import by the longest matching registrable
-// domain suffix of fqdn against the domains map.
+// domainOwnerPrefix marks synthetic manifest/plan keys that own per-domain TLS
+// snippets (as opposed to real service entries).
+const domainOwnerPrefix = "@domain:"
+
+// domainOwner returns the synthetic owner key for a domain's TLS snippets.
+func domainOwner(domain string) string { return domainOwnerPrefix + domain }
+
+// IsDomainOwner reports whether a plan/manifest key is a synthetic TLS-snippet
+// owner rather than a service name.
+func IsDomainOwner(key string) bool { return strings.HasPrefix(key, domainOwnerPrefix) }
+
+// matchDomain returns the longest registrable domain suffix of fqdn present in
+// the domains map.
 func matchDomain(c *config.Config, fqdn string) (string, bool) {
 	var bestKey string
 	for dom := range c.Domains {
@@ -170,7 +199,7 @@ func matchDomain(c *config.Config, fqdn string) (string, bool) {
 	if bestKey == "" {
 		return "", false
 	}
-	return c.Domains[bestKey].TLSImport, true
+	return bestKey, true
 }
 
 func sortedKeys[V any](m map[string]V) []string {

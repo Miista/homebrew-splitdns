@@ -46,8 +46,23 @@ type Engine struct {
 func (e *Engine) Reconcile(p *plan.Plan, mode Mode) (*Result, error) {
 	res := &Result{Skipped: p.Skipped, Total: p.Total}
 
-	// Write valid entries.
+	// Snapshot every path the manifest tracked BEFORE this run mutates it. This
+	// is the only record of files we previously wrote — including those whose
+	// backing host/domain/service is now gone from the YAML entirely, and so
+	// can't be re-derived from the plan. GC diffs this against what we write.
+	oldTracked := map[string]bool{}
+	for _, owner := range e.Manifest.Services() {
+		for _, rel := range e.Manifest.Files(owner) {
+			oldTracked[rel] = true
+		}
+	}
+
+	// Write valid entries; collect the set of paths now desired and the owners
+	// still present in the plan.
+	written := map[string]bool{}
+	liveOwner := map[string]bool{}
 	for _, svc := range p.Valid() {
+		liveOwner[svc] = true
 		var paths []string
 		for _, f := range p.Files[svc] {
 			abs := filepath.Join(e.RepoRoot, f.Path)
@@ -55,20 +70,45 @@ func (e *Engine) Reconcile(p *plan.Plan, mode Mode) (*Result, error) {
 				return res, fmt.Errorf("write %s for %s: %w", f.Path, svc, err)
 			}
 			res.Written = append(res.Written, f.Path)
+			written[f.Path] = true
 			paths = append(paths, f.Path)
 		}
 		e.Manifest.Set(svc, paths)
-		res.Synced = append(res.Synced, svc)
+		// Synthetic per-domain TLS owners are written and tracked like anything
+		// else, but they aren't services — keep them out of the service count.
+		if !plan.IsDomainOwner(svc) {
+			res.Synced = append(res.Synced, svc)
+		}
 	}
 
 	if mode == Complete {
-		if err := e.gc(p, res); err != nil {
-			return res, err
+		// GC = previously-tracked paths no longer desired. Catches whole-owner
+		// removal AND per-owner shrinkage (e.g. a host removed from a surviving
+		// domain's cross-product). Only manifest-tracked files are ever touched.
+		var stale []string
+		for rel := range oldTracked {
+			if !written[rel] {
+				stale = append(stale, rel)
+			}
+		}
+		sort.Strings(stale)
+		for _, rel := range stale {
+			abs := filepath.Join(e.RepoRoot, rel)
+			if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+				return res, fmt.Errorf("delete %s: %w", rel, err)
+			}
+			res.Deleted = append(res.Deleted, rel)
+		}
+		// Drop owners no longer in the plan (their backing service/domain is
+		// gone), so the manifest doesn't retain dead entries.
+		for _, owner := range e.Manifest.Services() {
+			if !liveOwner[owner] {
+				e.Manifest.Remove(owner)
+			}
 		}
 	}
 
 	sort.Strings(res.Written)
-	sort.Strings(res.Deleted)
 	sort.Strings(res.Synced)
 
 	if err := e.Manifest.Save(); err != nil {
@@ -77,26 +117,10 @@ func (e *Engine) Reconcile(p *plan.Plan, mode Mode) (*Result, error) {
 	return res, nil
 }
 
-// gc deletes manifest-tracked files whose backing service has no valid plan
-// entry. Never touches non-manifest files (design §5/§6).
-func (e *Engine) gc(p *plan.Plan, res *Result) error {
-	valid := map[string]bool{}
-	for _, s := range p.Valid() {
-		valid[s] = true
-	}
-	for _, svc := range e.Manifest.Services() {
-		if valid[svc] {
-			continue // still has a valid entry; its files were just rewritten
-		}
-		if err := e.deleteService(svc, res); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// deleteService removes all manifest-tracked files for a service and drops it
-// from the manifest. Shared by --complete GC and the remove command (§6).
+// deleteService removes a service's manifest-tracked files and drops it from
+// the manifest. Shared by --complete GC and the remove command (§6). TLS
+// snippets are owned by synthetic @domain: keys, not services, so a service's
+// files never overlap another owner's — no cross-reference guard is needed.
 func (e *Engine) deleteService(svc string, res *Result) error {
 	for _, rel := range e.Manifest.Files(svc) {
 		abs := filepath.Join(e.RepoRoot, rel)

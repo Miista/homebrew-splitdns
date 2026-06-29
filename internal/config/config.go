@@ -18,6 +18,7 @@ import (
 const (
 	DefaultDnsmasqDir    = "pihole/data/dnsmasq.d/generated"
 	DefaultCaddySitesDir = "caddy/data/sites"
+	DefaultCaddyTLSDir   = "caddy/data/tls"
 )
 
 // Host is one host in the homelab, owning a directory in the repo. The
@@ -38,10 +39,11 @@ func (m Host) ResolvedDir(name string) string {
 	return name
 }
 
-// Domain maps a registrable domain to the tls snippet its Caddyfile imports.
-type Domain struct {
-	TLSImport string `yaml:"tls_import"`
-}
+// Domain is a registrable domain shd manages. The TLS snippet name and cert
+// paths are derived from the domain (see render.TLSSnippetName / TLSSnippet),
+// so no per-domain configuration is needed. The struct is kept (rather than a
+// bare set) so domain-level options can be added later without a schema break.
+type Domain struct{}
 
 // Defaults holds repo-wide defaults.
 type Defaults struct {

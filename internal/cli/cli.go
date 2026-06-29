@@ -399,7 +399,7 @@ Services:
 Building blocks (a service references a host and a domain):
   shd host   add    <name> <ip>
   shd host   remove <name>
-  shd domain add    <name> --tls-import <snippet>
+  shd domain add    <name>
   shd domain remove <name>
   shd dns-host set  <name>    Set the default resolver host for new records.
 
@@ -410,6 +410,10 @@ Other:
 Global flags:
   -C <dir>   Run as if shd were started in <dir> (default: current directory).
 
-Removing a host or domain is refused while any service still references it.
+Notes:
+  - A host's name is its repo directory (e.g. host "pi" -> ./pi/), which must already exist.
+  - On sync, each domain gets a TLS snippet generated on every host, deriving cert paths from
+    the convention caddy/data/certs/<domain>/{fullchain.cer,privkey.key}.
+  - Removing a host or domain is refused while any service still references it.
 `)
 }

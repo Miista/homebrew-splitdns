@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -138,22 +137,12 @@ func cmdDomain(cfgPath string, args []string) int {
 }
 
 func domainAdd(cfgPath string, args []string) int {
-	name, args, ok := leadingName(args)
-	if !ok {
+	if len(args) < 1 {
 		errf("Missing the <name>.")
-		hint("Usage: shd domain add <name> --tls-import <snippet>")
+		hint("Usage: shd domain add <name>")
 		return 2
 	}
-	fs := flag.NewFlagSet("domain add", flag.ContinueOnError)
-	tlsImport := fs.String("tls-import", "", "Caddy tls snippet name, e.g. tls_example_com (required)")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if *tlsImport == "" {
-		errf("Missing required flag: --tls-import.")
-		hint("Usage: shd domain add <name> --tls-import <snippet>")
-		return 2
-	}
+	name := args[0]
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
@@ -164,12 +153,12 @@ func domainAdd(cfgPath string, args []string) int {
 		errf("Domain %q already exists.", name)
 		return 1
 	}
-	cfg.Domains[name] = config.Domain{TLSImport: *tlsImport}
+	cfg.Domains[name] = config.Domain{}
 	if err := cfg.Save(); err != nil {
 		errf("%v", err)
 		return 1
 	}
-	fmt.Printf("Added domain %q (imports %s).\n", name, *tlsImport)
+	fmt.Printf("Added domain %q.\n", name)
 	return 0
 }
 

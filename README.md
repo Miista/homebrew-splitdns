@@ -58,9 +58,9 @@ shd host add appbox   192.0.2.2
 # 2. Choose the default resolver host (whose dnsmasq receives the records)
 shd dns-host set resolver
 
-# 3. Declare the domains and the Caddy tls snippet each one imports
-shd domain add example.com --tls-import tls_example_com
-shd domain add example.net --tls-import tls_example_net
+# 3. Declare the domains (shd generates each one's TLS snippet on sync)
+shd domain add example.com
+shd domain add example.net
 
 # 4. Add a service (mutates YAML, then syncs)
 shd add docs --fqdn docs.example.com --host appbox --backend paperless:8000
@@ -101,7 +101,7 @@ shd [-C <dir>] sync   [--incremental | --complete]
 
 shd [-C <dir>] host   add    <name> <ip>
 shd [-C <dir>] host   remove <name>
-shd [-C <dir>] domain add    <name> --tls-import <snippet>
+shd [-C <dir>] domain add    <name>
 shd [-C <dir>] domain remove <name>
 
   -C <dir>   run as if shd were started in <dir> (default: current directory)
@@ -114,7 +114,7 @@ shd [-C <dir>] domain remove <name>
 | `remove` | Drop the service from YAML, delete its tracked files, drop it from the manifest. |
 | `sync --incremental` *(default)* | Write/update files for every valid entry. **Never deletes.** |
 | `sync --complete` | Incremental **plus GC**: delete tracked files whose service is gone. Never touches non-manifest files. |
-| `host add` / `domain add` | Declare a host / domain. `host add <name> <ip>` (the name is its repo directory, which must already exist; the IP must be unique); `domain` needs `--tls-import`. |
+| `host add` / `domain add` | Declare a host / domain. `host add <name> <ip>` (the name is its repo directory, which must already exist; the IP must be unique). `domain add <name>` — shd generates the domain's TLS snippet on sync. |
 | `host remove` / `domain remove` | **Refuses** while any service still references it (and lists the blockers). |
 
 `update`, `remove`, and `sync` refuse with a guiding message (and non-zero exit) when there is no
@@ -131,8 +131,8 @@ hosts:
   appbox:   { ip: 192.0.2.2 }
 
 domains:
-  example.com: { tls_import: tls_example_com }
-  example.net: { tls_import: tls_example_net }
+  example.com: {}   # TLS snippet + cert path are derived from the name
+  example.net: {}
 
 defaults:
   dns_host: resolver          # which host's dnsmasq receives address= records, unless overridden
@@ -169,14 +169,17 @@ synced 11/12 services; 1 skipped: docs (unknown host 'appbx' — defined hosts: 
 
 ## Prerequisites (one-time, manual)
 
-`shd` only writes into the `sites/` directory; it never edits a machine's main `Caddyfile`.
-Each serving machine's `Caddyfile` must therefore:
+`shd` writes only into its own `sites/` and `tls/` directories; it never edits a host's main
+`Caddyfile`. Each host's `Caddyfile` must therefore include both:
 
-1. define the `(tls_<domain>)` snippets it references, and
-2. include `import sites/*.caddy`.
+```
+import tls/*.caddy
+import sites/*.caddy
+```
 
-Caddy serves wildcard certs from an external acme.sh pipeline — `shd` never touches certs or
-ACME.
+`shd` generates the `(tls_<domain>)` snippets into `tls/` (deriving cert paths from the
+convention `caddy/data/certs/<domain>/`), so you no longer hand-write them. Caddy serves the
+wildcard certs from an external acme.sh pipeline — `shd` never touches certs or ACME.
 
 ## After a sync (deploy concern, not this tool)
 

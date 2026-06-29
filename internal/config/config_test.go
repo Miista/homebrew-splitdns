@@ -49,7 +49,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 
 	c, _ := Load(path)
 	c.Hosts["resolver"] = Host{IP: "192.0.2.1", Dir: "resolver"}
-	c.Domains["example.com"] = Domain{TLSImport: "tls_example_com"}
+	c.Domains["example.com"] = Domain{}
 	c.Defaults.DNSHost = "resolver"
 	c.Services["docs"] = Service{FQDN: "docs.example.com", Host: "resolver", Backend: "paperless:8000"}
 	if err := c.Save(); err != nil {
