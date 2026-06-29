@@ -40,6 +40,15 @@ func hint(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", a...)
 }
 
+// plural returns singular when n == 1, else singular+"s". Avoids the clumsy
+// "flag(s)" hedge in messages.
+func plural(n int, singular string) string {
+	if n == 1 {
+		return singular
+	}
+	return singular + "s"
+}
+
 // Run executes the CLI. Returns a process exit code (design §8: non-zero if
 // any entry was skipped or an error occurred).
 func Run(args []string) int {
@@ -101,7 +110,7 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 	// positional, so split it off first.
 	name, args, ok := leadingName(args)
 	if !ok {
-		errf("add requires a <service> name.")
+		errf("Missing the <service> name.")
 		hint("Usage: shd add <service> --fqdn <fqdn> --host <host> --backend <name:port>")
 		return 2
 	}
@@ -126,8 +135,8 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 		missing = append(missing, "--backend")
 	}
 	if len(missing) > 0 {
-		errf("add is missing required flag(s): %s.", strings.Join(missing, ", "))
-		hint("Usage: shd add %s --fqdn <fqdn> --host <host> --backend <name:port> [--dns-host <host>]", name)
+		errf("Missing required %s: %s.", plural(len(missing), "flag"), strings.Join(missing, ", "))
+		hint("Usage: shd add <service> --fqdn <fqdn> --host <host> --backend <name:port> [--dns-host <host>]")
 		return 2
 	}
 
@@ -157,7 +166,7 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	name, args, ok := leadingName(args)
 	if !ok {
-		errf("update requires a <service> name.")
+		errf("Missing the <service> name.")
 		hint("Usage: shd update <service> [--fqdn ...] [--host ...] [--backend ...] [--dns-host ...]")
 		return 2
 	}
@@ -211,7 +220,7 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 
 func cmdRemove(repoRoot, cfgPath string, args []string) int {
 	if len(args) < 1 {
-		errf("remove requires a <service> name.")
+		errf("Missing the <service> name.")
 		hint("Usage: shd remove <service>")
 		return 2
 	}

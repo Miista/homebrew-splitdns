@@ -14,7 +14,7 @@ import (
 // them is followed by sync to regenerate affected services.
 func cmdHost(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		errf("host requires a subcommand.")
+		errf("Missing subcommand.")
 		hint("Usage: shd host add|remove <name> ...")
 		return 2
 	}
@@ -33,7 +33,7 @@ func cmdHost(cfgPath string, args []string) int {
 func hostAdd(cfgPath string, args []string) int {
 	name, args, ok := leadingName(args)
 	if !ok {
-		errf("host add requires a <name>.")
+		errf("Missing the <name>.")
 		hint("Usage: shd host add <name> --ip <ip> --dir <dir>")
 		return 2
 	}
@@ -53,8 +53,8 @@ func hostAdd(cfgPath string, args []string) int {
 		missing = append(missing, "--dir")
 	}
 	if len(missing) > 0 {
-		errf("host add is missing required flag(s): %s.", strings.Join(missing, ", "))
-		hint("Usage: shd host add %s --ip <ip> --dir <dir>", name)
+		errf("Missing required %s: %s.", plural(len(missing), "flag"), strings.Join(missing, ", "))
+		hint("Usage: shd host add <name> --ip <ip> --dir <dir>")
 		return 2
 	}
 
@@ -90,7 +90,7 @@ func hostAdd(cfgPath string, args []string) int {
 
 func hostRemove(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		errf("host remove requires a <name>.")
+		errf("Missing the <name>.")
 		return 2
 	}
 	name := args[0]
@@ -104,7 +104,7 @@ func hostRemove(cfgPath string, args []string) int {
 		return 1
 	}
 	if users := cfg.ServicesUsingHost(name); len(users) > 0 {
-		errf("Host %q is still referenced by %d service(s): %s.", name, len(users), strings.Join(users, ", "))
+		errf("Host %q is still referenced by %d %s: %s.", name, len(users), plural(len(users), "service"), strings.Join(users, ", "))
 		hint("Reassign or remove those services first.")
 		return 1
 	}
@@ -120,7 +120,7 @@ func hostRemove(cfgPath string, args []string) int {
 // cmdDomain handles `domain add|remove`.
 func cmdDomain(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		errf("domain requires a subcommand.")
+		errf("Missing subcommand.")
 		hint("Usage: shd domain add|remove <name> ...")
 		return 2
 	}
@@ -139,7 +139,7 @@ func cmdDomain(cfgPath string, args []string) int {
 func domainAdd(cfgPath string, args []string) int {
 	name, args, ok := leadingName(args)
 	if !ok {
-		errf("domain add requires a <name>.")
+		errf("Missing the <name>.")
 		hint("Usage: shd domain add <name> --tls-import <snippet>")
 		return 2
 	}
@@ -149,8 +149,8 @@ func domainAdd(cfgPath string, args []string) int {
 		return 2
 	}
 	if *tlsImport == "" {
-		errf("domain add is missing required flag: --tls-import.")
-		hint("Usage: shd domain add %s --tls-import <snippet>", name)
+		errf("Missing required flag: --tls-import.")
+		hint("Usage: shd domain add <name> --tls-import <snippet>")
 		return 2
 	}
 
@@ -174,7 +174,7 @@ func domainAdd(cfgPath string, args []string) int {
 
 func domainRemove(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		errf("domain remove requires a <name>.")
+		errf("Missing the <name>.")
 		return 2
 	}
 	name := args[0]
@@ -188,7 +188,7 @@ func domainRemove(cfgPath string, args []string) int {
 		return 1
 	}
 	if users := cfg.ServicesUsingDomain(name); len(users) > 0 {
-		errf("Domain %q is still referenced by %d service(s): %s.", name, len(users), strings.Join(users, ", "))
+		errf("Domain %q is still referenced by %d %s: %s.", name, len(users), plural(len(users), "service"), strings.Join(users, ", "))
 		hint("Reassign or remove those services first.")
 		return 1
 	}
@@ -207,12 +207,12 @@ func domainRemove(cfgPath string, args []string) int {
 // service is skipped.
 func cmdDNSHost(cfgPath string, args []string) int {
 	if len(args) < 1 || args[0] != "set" {
-		errf("dns-host requires the 'set' subcommand.")
+		errf("Missing or unknown subcommand — expected 'set'.")
 		hint("Usage: shd dns-host set <name>")
 		return 2
 	}
 	if len(args) < 2 {
-		errf("dns-host set requires a <name>.")
+		errf("Missing the <name>.")
 		hint("Usage: shd dns-host set <name>")
 		return 2
 	}
