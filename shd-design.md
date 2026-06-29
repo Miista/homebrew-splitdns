@@ -1,4 +1,4 @@
-# shd (Split-Horizon DNS) — Design Document
+# shd — Split-Horizon DNS (Manager) — Design Document
 
 A Go CLI that generates and reconciles split-horizon DNS records (Pi-hole/dnsmasq) and
 reverse-proxy site blocks (Caddy) for a homelab, from a single declarative source of
