@@ -56,7 +56,7 @@ func cmdVerify(cfgPath string, args []string) int {
 	} else {
 		p := plan.Build(cfg)
 		for _, k := range p.Valid() {
-			if !plan.IsDomainOwner(k) {
+			if !plan.IsSyntheticOwner(k) {
 				services = append(services, k)
 			}
 		}

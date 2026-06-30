@@ -332,6 +332,8 @@ func printVerbose(p *plan.Plan, res *syncpkg.Result) {
 	for _, owner := range sortedKeysOf(p.Files) {
 		if plan.IsDomainOwner(owner) {
 			group("shared TLS for "+plan.DomainOf(owner), p.Files[owner])
+		} else if plan.IsSyntheticOwner(owner) {
+			group("sd.generated.caddy", p.Files[owner])
 		}
 	}
 
@@ -667,7 +669,7 @@ func changedServices(p *plan.Plan, res *syncpkg.Result) []string {
 	}
 	var out []string
 	for svc, files := range p.Files {
-		if plan.IsDomainOwner(svc) {
+		if plan.IsSyntheticOwner(svc) {
 			continue
 		}
 		for _, f := range files {
