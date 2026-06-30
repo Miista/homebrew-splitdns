@@ -163,17 +163,9 @@ func TestRun_List(t *testing.T) {
 	Run([]string{"-C", dir, "add", "service", "docs",
 		"--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000"})
 
-	// All valid -> exit 0.
+	// list is plain inventory — always exits 0, regardless of service validity.
 	if code := Run([]string{"-C", dir, "list"}); code != 0 {
-		t.Errorf("list with all-valid state should exit 0, got %d", code)
-	}
-
-	// Add a service that passes add (valid fqdn/host/domain) but is skipped at
-	// plan time (malformed backend) -> list should exit 1.
-	Run([]string{"-C", dir, "add", "service", "bad",
-		"--fqdn", "bad.example.com", "--host", "appbox", "--backend", "noport"})
-	if code := Run([]string{"-C", dir, "list"}); code != 1 {
-		t.Errorf("list with a skipped service should exit 1, got %d", code)
+		t.Errorf("list should exit 0 (plain inventory), got %d", code)
 	}
 }
 
