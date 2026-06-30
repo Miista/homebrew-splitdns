@@ -116,8 +116,8 @@ func cmdDoctor(cfgPath string, args []string) int {
 		}
 	}
 
-	// --- Caddy import check ---
-	problems += checkCaddyImports(cfg, p)
+	// --- Caddyfile import line check ---
+	problems += checkCaddyfileImports(repoRoot, cfg, fix)
 
 	if problems > 0 {
 		return 1
@@ -125,40 +125,44 @@ func cmdDoctor(cfgPath string, args []string) int {
 	return 0
 }
 
-// checkCaddyImports runs `caddy adapt` inside the caddy container and reports
-// any service FQDNs that don't appear in the adapted config — meaning the
-// Caddyfile is missing the required import lines. Skips silently if docker is
-// unavailable or the caddy container isn't running.
-func checkCaddyImports(cfg *config.Config, p *plan.Plan) int {
-	if _, err := exec.LookPath("docker"); err != nil {
-		return 0
-	}
-	const cf = "/etc/caddy/Caddyfile"
-	adapted := dexecShAll(caddyContainer, "caddy adapt --config "+cf+" --adapter caddyfile 2>/dev/null")
-	if adapted == "" {
-		fmt.Println("Skipped Caddy import check (caddy container not reachable).")
-		return 0
-	}
-
-	adaptedLow := strings.ToLower(adapted)
+// checkCaddyfileImports checks that each host's Caddyfile contains the line
+// `import sd.generated.caddy`. If fix is true, appends the line when missing.
+func checkCaddyfileImports(repoRoot string, cfg *config.Config, fix bool) int {
+	const importLine = "import sd.generated.caddy"
 	problems := 0
-	for _, k := range p.Valid() {
-		if plan.IsDomainOwner(k) {
+	for hostName, h := range cfg.Hosts {
+		cfPath := filepath.Join(repoRoot, h.ResolvedDir(hostName), config.DefaultCaddyDataDir, "Caddyfile")
+		data, err := os.ReadFile(cfPath)
+		if os.IsNotExist(err) {
+			// No Caddyfile on this host — nothing to check.
 			continue
 		}
-		svc, ok := cfg.Services[k]
-		if !ok {
-			continue
-		}
-		if strings.Contains(adaptedLow, strings.ToLower(svc.FQDN)) {
-			fmt.Printf(tick+" %s in adapted Caddy config\n", svc.FQDN)
-		} else {
-			fmt.Printf(cross+" %s missing from adapted Caddy config — Caddyfile must contain 'import tls/*.caddy' then 'import sites/*.caddy'\n", svc.FQDN)
+		if err != nil {
+			fmt.Printf(cross+" %s: cannot read Caddyfile: %v\n", hostName, err)
 			problems++
+			continue
 		}
-	}
-	if problems == 0 && len(p.Valid()) > 0 {
-		fmt.Println(tick + " All services present in adapted Caddy config.")
+		if strings.Contains(string(data), importLine) {
+			fmt.Printf(tick+" %s: Caddyfile imports sd.generated.caddy\n", hostName)
+			continue
+		}
+		problems++
+		if !fix {
+			fmt.Printf(cross+" %s: Caddyfile missing `%s`\n", hostName, importLine)
+			continue
+		}
+		// Append the import line, ensuring a trailing newline before it.
+		content := string(data)
+		if !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		content += "\n" + importLine + "\n"
+		if err := config.AtomicWrite(cfPath, []byte(content)); err != nil {
+			fmt.Printf(cross+" %s: could not fix Caddyfile: %v\n", hostName, err)
+			continue
+		}
+		fmt.Printf(tick+" %s: added `%s` to Caddyfile\n", hostName, importLine)
+		problems--
 	}
 	return problems
 }

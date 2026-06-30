@@ -22,7 +22,7 @@ func TestLoad_Missing(t *testing.T) {
 func TestLoad_Present(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "services.yaml")
-	write(t, path, "machines: {}\ndomains: {}\nservices: {}\n")
+	write(t, path, "machines: {}\ndomains: []\nservices: {}\n")
 
 	c, err := Load(path)
 	if err != nil {

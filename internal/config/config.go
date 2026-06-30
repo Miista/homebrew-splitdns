@@ -20,6 +20,7 @@ const (
 	// into subdirectories, so a 'generated/' subdir would be silently ignored.
 	// The "generated" marker lives in the filename (<service>.generated.conf).
 	DefaultDnsmasqDir    = "pihole/data/dnsmasq.d"
+	DefaultCaddyDataDir  = "caddy/data"
 	DefaultCaddySitesDir = "caddy/data/sites"
 	DefaultCaddyTLSDir   = "caddy/data/tls"
 )
@@ -44,8 +45,7 @@ func (m Host) ResolvedDir(name string) string {
 
 // Domain is a registrable domain sd manages. The TLS snippet name and cert
 // paths are derived from the domain (see render.TLSSnippetName / TLSSnippet),
-// so no per-domain configuration is needed. The struct is kept (rather than a
-// bare set) so domain-level options can be added later without a schema break.
+// so no per-domain configuration is needed.
 type Domain struct{}
 
 // Defaults holds repo-wide defaults.
@@ -77,44 +77,68 @@ type Config struct {
 	path string `yaml:"-"`
 }
 
+// wireConfig is the YAML-serialized form of Config. Domains are a plain list
+// of strings (no per-domain data), which is cleaner than map[string]Domain{}.
+type wireConfig struct {
+	Hosts    map[string]Host    `yaml:"hosts"`
+	Domains  []string           `yaml:"domains"`
+	Defaults Defaults           `yaml:"defaults"`
+	Services map[string]Service `yaml:"services"`
+}
+
 // Load reads and parses services.yaml. A parse failure is the one globally
 // fatal condition (design §7).
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			c := &Config{
+			return &Config{
 				Hosts:    map[string]Host{},
 				Domains:  map[string]Domain{},
 				Services: map[string]Service{},
-				Exists:   false,
 				path:     path,
-			}
-			return c, nil
+			}, nil
 		}
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	var c Config
-	if err := yaml.Unmarshal(data, &c); err != nil {
+	var w wireConfig
+	if err := yaml.Unmarshal(data, &w); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	c := &Config{
+		Hosts:    w.Hosts,
+		Domains:  map[string]Domain{},
+		Defaults: w.Defaults,
+		Services: w.Services,
+		Exists:   true,
+		path:     path,
+	}
+	for _, d := range w.Domains {
+		c.Domains[d] = Domain{}
 	}
 	if c.Hosts == nil {
 		c.Hosts = map[string]Host{}
 	}
-	if c.Domains == nil {
-		c.Domains = map[string]Domain{}
-	}
 	if c.Services == nil {
 		c.Services = map[string]Service{}
 	}
-	c.Exists = true
-	c.path = path
-	return &c, nil
+	return c, nil
 }
 
 // Save rewrites services.yaml wholesale. Owned file; ordering not preserved.
 func (c *Config) Save() error {
-	data, err := yaml.Marshal(c)
+	domains := make([]string, 0, len(c.Domains))
+	for d := range c.Domains {
+		domains = append(domains, d)
+	}
+	sort.Strings(domains)
+	w := wireConfig{
+		Hosts:    c.Hosts,
+		Domains:  domains,
+		Defaults: c.Defaults,
+		Services: c.Services,
+	}
+	data, err := yaml.Marshal(w)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}

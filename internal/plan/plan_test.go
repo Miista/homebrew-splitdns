@@ -105,7 +105,7 @@ func TestBuild_FQDNCollision_FailsBoth(t *testing.T) {
 		t.Error("service b should be skipped on fqdn collision")
 	}
 	for k := range p.Files {
-		if !IsDomainOwner(k) {
+		if !IsSyntheticOwner(k) {
 			t.Errorf("no service files should be produced on collision, got %q: %+v", k, p.Files[k])
 		}
 	}

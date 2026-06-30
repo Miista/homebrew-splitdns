@@ -136,6 +136,20 @@ func Build(c *config.Config) *Plan {
 			p.Files[owner] = files
 		}
 	}
+
+	// sd.generated.caddy is written to every host's caddy/data/ dir. It
+	// contains the two import lines the Caddyfile must import. Owned under a
+	// synthetic key so GC tracks it independently of services/domains.
+	const caddyImportOwner = caddyImportKey
+	var importFiles []File
+	for hostName, h := range c.Hosts {
+		path := filepath.Join(h.ResolvedDir(hostName), config.DefaultCaddyDataDir, render.CaddyImportFilename)
+		importFiles = append(importFiles, File{Path: path, Content: render.CaddyImportFile})
+	}
+	if len(importFiles) > 0 {
+		p.Files[caddyImportOwner] = importFiles
+	}
+
 	return p
 }
 
@@ -185,6 +199,16 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 // domainOwnerPrefix marks synthetic manifest/plan keys that own per-domain TLS
 // snippets (as opposed to real service entries).
 const domainOwnerPrefix = "@domain:"
+
+// caddyImportKey is the synthetic plan/manifest key for the per-host
+// sd.generated.caddy import file.
+const caddyImportKey = "@caddy-import"
+
+// IsSyntheticOwner reports whether a plan/manifest key is synthetic (not a
+// real service name). Covers both domain TLS owners and the caddy-import owner.
+func IsSyntheticOwner(key string) bool {
+	return IsDomainOwner(key) || key == caddyImportKey
+}
 
 // domainOwner returns the synthetic owner key for a domain's TLS snippets.
 func domainOwner(domain string) string { return domainOwnerPrefix + domain }
