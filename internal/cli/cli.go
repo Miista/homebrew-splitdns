@@ -536,7 +536,7 @@ func runSync(repoRoot string, cfg *config.Config, o syncOpts) int {
 	return 0
 }
 
-// printNextSteps prints the command to make written files live on this host.
+// printNextSteps prints per-host commands to make written files live.
 // Only printed when files were actually written this run.
 func printNextSteps(cfg *config.Config, res *syncpkg.Result) {
 	written := append(append([]string{}, res.Created...), res.Updated...)
@@ -544,33 +544,42 @@ func printNextSteps(cfg *config.Config, res *syncpkg.Result) {
 		return
 	}
 
-	self := localHost(cfg)
-	if self == "" {
-		return
-	}
-
-	dnsDirty, caddyDirty := false, false
+	dnsDirty := false
+	caddyDirty := map[string]bool{} // host name -> true
 	for _, path := range written {
 		if strings.Contains(path, "dnsmasq") {
 			dnsDirty = true
 		} else if strings.Contains(path, "caddy") {
-			caddyDirty = true
+			// first path segment is the host dir; match against host names
+			for name, h := range cfg.Hosts {
+				dir := h.ResolvedDir(name)
+				if strings.HasPrefix(path, dir+"/") || strings.HasPrefix(path, name+"/") {
+					caddyDirty[name] = true
+				}
+			}
 		}
 	}
 
-	if self == cfg.Defaults.DNSHost && dnsDirty {
-		fmt.Println("\nTo make changes live:")
-		fmt.Println("  docker restart pihole")
+	if !dnsDirty && len(caddyDirty) == 0 {
+		return
 	}
-	if caddyDirty {
-		// Check if this host's caddy files were among the written paths.
-		hostDir := cfg.Hosts[self].ResolvedDir(self)
-		for _, path := range written {
-			if strings.HasPrefix(path, hostDir+"/caddy") || strings.HasPrefix(path, self+"/caddy") {
-				fmt.Println("\nTo make changes live:")
-				fmt.Println("  docker exec caddy caddy reload --config /etc/caddy/Caddyfile")
-				break
-			}
+
+	self := localHost(cfg)
+	fmt.Println("\nTo make changes live:")
+	if dnsDirty {
+		h := cfg.Defaults.DNSHost
+		if h == self {
+			fmt.Println("  docker restart pihole  # reloaddns does not reload conf-dir in pihole v6")
+		} else {
+			fmt.Printf("  on %s:  docker restart pihole\n", h)
+		}
+	}
+	for _, name := range sortedKeysOf(caddyDirty) {
+		cmd := "docker exec caddy caddy reload --config /etc/caddy/Caddyfile"
+		if name == self {
+			fmt.Printf("  %s\n", cmd)
+		} else {
+			fmt.Printf("  on %s:  %s\n", name, cmd)
 		}
 	}
 }
