@@ -88,9 +88,11 @@ func Run(args []string) int {
 		usage()
 		return 2
 	}
-	// Operate on the current directory by default; -C <dir> changes it
-	// (git-style). Strip a leading -C/<dir> before dispatching.
-	repoRoot := "."
+	// Operate on ~/docker by default; -C <dir> overrides it (git-style).
+	repoRoot := "~/docker"
+	if home, err := os.UserHomeDir(); err == nil {
+		repoRoot = filepath.Join(home, "docker")
+	}
 	if args[0] == "-C" {
 		if len(args) < 2 {
 			errf("The -C flag requires a directory argument.")
