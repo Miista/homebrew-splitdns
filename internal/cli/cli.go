@@ -456,6 +456,16 @@ func runSync(repoRoot string, cfg *config.Config, o syncOpts) int {
 
 	synced, total := len(res.Synced), res.Total
 	fmt.Printf("Synced %d/%d services.\n", synced, total)
+
+	// Surface an incomplete bootstrap so a no-op/partial sync explains itself,
+	// rather than leaving the user wondering why nothing happened.
+	if cfg.Defaults.DNSHost == "" {
+		fmt.Println("Note: no dns_host set — run 'shd set dns-host <name>' (records can't be routed without it).")
+	}
+	if len(cfg.Domains) == 0 {
+		fmt.Println("Note: no domains defined — run 'shd add domain <name>' (a service's fqdn must match a domain).")
+	}
+
 	if o.verbose {
 		printVerbose(p, res)
 	} else {
