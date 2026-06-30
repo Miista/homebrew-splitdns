@@ -44,7 +44,7 @@ func warnIfIgnored(repoRoot string, p *plan.Plan) {
 		verb = "are"
 	}
 	fmt.Fprintf(os.Stderr,
-		"Warning: %d generated %s %s gitignored and won't deploy. Run 'shd doctor --fix'.\n",
+		warn+" %d generated %s %s gitignored and won't deploy. Run 'shd doctor --fix'.\n",
 		len(ignored), noun, verb)
 }
 
@@ -86,7 +86,7 @@ func cmdDoctor(cfgPath string, args []string) int {
 		return 0
 	}
 	if len(ignored) == 0 {
-		fmt.Println("✓ No generated files are gitignored.")
+		fmt.Println(tick+" No generated files are gitignored.")
 		return 0
 	}
 
@@ -104,7 +104,7 @@ func cmdDoctor(cfgPath string, args []string) int {
 		errf("%v", err)
 		return 1
 	}
-	fmt.Println("✓ Updated .gitignore")
+	fmt.Println(tick+" Updated .gitignore")
 
 	// Re-verify: the negations should now un-ignore the files.
 	still, ok := ignoredPaths(repoRoot, planPaths(p))
@@ -112,7 +112,7 @@ func cmdDoctor(cfgPath string, args []string) int {
 		return 0 // can't re-check; assume the write was enough
 	}
 	if len(still) == 0 {
-		fmt.Println("✓ All generated files are now tracked by git.")
+		fmt.Println(tick+" All generated files are now tracked by git.")
 		return 0
 	}
 	fmt.Fprintln(os.Stderr)

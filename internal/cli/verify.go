@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -40,6 +41,8 @@ func cmdVerify(cfgPath string, args []string) int {
 	}
 	fmt.Printf("Running on host %q.\n", self)
 
+	warnIfIgnored(filepath.Dir(cfgPath), plan.Build(cfg))
+
 	// Which services to check: one fqdn, or all.
 	var services []string
 	if len(args) > 0 {
@@ -65,7 +68,7 @@ func cmdVerify(cfgPath string, args []string) int {
 	for _, name := range services {
 		svc := cfg.Services[name]
 		hostIP := cfg.Hosts[svc.Host].IP
-		fmt.Printf("\n%s (%s)\n", name, svc.FQDN)
+		fmt.Printf("\n%s== %s · %s ==%s\n", boldOn, name, svc.FQDN, boldOff)
 
 		if self == resolver {
 			v.dns(svc.FQDN, hostIP)
@@ -90,8 +93,8 @@ func cmdVerify(cfgPath string, args []string) int {
 
 type verifier struct{ pass, fail int }
 
-func (v *verifier) ok(f string, a ...any) { fmt.Printf("  ✓ "+f+"\n", a...); v.pass++ }
-func (v *verifier) no(f string, a ...any) { fmt.Printf("  ✗ "+f+"\n", a...); v.fail++ }
+func (v *verifier) ok(f string, a ...any) { fmt.Printf("  "+tick+" "+f+"\n", a...); v.pass++ }
+func (v *verifier) no(f string, a ...any) { fmt.Printf("  "+cross+" "+f+"\n", a...); v.fail++ }
 
 // dns runs the resolver-side checks (in the pihole container).
 func (v *verifier) dns(fqdn, wantIP string) {

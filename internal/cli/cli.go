@@ -26,6 +26,37 @@ const (
 // -ldflags "-X shd/internal/cli.Version=...".
 var Version = "dev"
 
+// Status glyphs, colored only when stdout is a terminal (so piped/captured
+// output stays plain text). green ✓ / red ✗ / yellow ⚠.
+var (
+	tick    = "✓"
+	cross   = "✗"
+	warn    = "⚠"
+	boldOn  = ""
+	boldOff = ""
+)
+
+func init() {
+	if !colorEnabled() {
+		return
+	}
+	tick    = "\033[32m✓\033[0m"
+	cross   = "\033[31m✗\033[0m"
+	warn    = "\033[33m⚠\033[0m"
+	boldOn  = "\033[1m"
+	boldOff = "\033[0m"
+}
+
+// colorEnabled reports whether ANSI color should be used: stdout is a terminal
+// and NO_COLOR is unset (https://no-color.org).
+func colorEnabled() bool {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
 // errf prints a user-facing error to stderr in the house style:
 //
 //	Error: <Capitalized message>.
@@ -245,7 +276,7 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 		errf("%v", err)
 		return 1
 	}
-	fmt.Printf("✓ Added service %q\n", name)
+	fmt.Printf(tick+" Added service %q\n", name)
 	return runSync(repoRoot, cfg, syncOpts{mode: syncpkg.Incremental, afterMutation: true})
 }
 
@@ -361,7 +392,7 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 		errf("%v", err)
 		return 1
 	}
-	fmt.Printf("✓ Updated service %q\n", name)
+	fmt.Printf(tick+" Updated service %q\n", name)
 	return runSync(repoRoot, cfg, syncOpts{mode: syncpkg.Incremental, afterMutation: true})
 }
 
@@ -394,11 +425,11 @@ func cmdRemove(repoRoot, cfgPath string, args []string) int {
 		errf("%v", err)
 		return 1
 	}
-	fmt.Printf("✓ Removed service %q\n", name)
+	fmt.Printf(tick+" Removed service %q\n", name)
 	if n := len(res.Deleted); n > 0 {
-		fmt.Printf("✓ Deleted %d generated %s\n", n, plural(n, "file"))
+		fmt.Printf(tick+" Deleted %d generated %s\n", n, plural(n, "file"))
 	} else {
-		fmt.Printf("✓ No generated files to delete\n")
+		fmt.Println(tick + " No generated files to delete")
 	}
 	return 0
 }
@@ -446,7 +477,7 @@ func runSync(repoRoot string, cfg *config.Config, o syncOpts) int {
 	// Pre-flight: refuse before writing when a repo-wide precondition isn't met.
 	if reason := syncBlockedReason(cfg); reason != "" {
 		if o.afterMutation {
-			fmt.Fprintf(os.Stderr, "✗ Not synced: %s\n", reason)
+			fmt.Fprintf(os.Stderr, cross+" Not synced: %s\n", reason)
 			hint("  The change is saved in services.yaml. Run 'shd sync' once that's resolved.")
 		} else {
 			errf("Cannot sync: %s", reason)

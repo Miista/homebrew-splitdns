@@ -17,12 +17,12 @@ func cmdList(cfgPath string, args []string) int {
 
 	// Big fat warning first: without a dns_host, nothing can sync.
 	if cfg.Defaults.DNSHost == "" {
-		fmt.Println("⚠  No dns_host set — services cannot sync.")
+		fmt.Println(warn+" No dns_host set — services cannot sync.")
 		fmt.Println("   Set the resolver host:  shd set dns-host <name>")
 		fmt.Println()
 	}
 
-	fmt.Printf("Hosts (%d):\n", len(cfg.Hosts))
+	fmt.Printf("%s== Hosts (%d) ==%s\n", boldOn, len(cfg.Hosts), boldOff)
 	for _, name := range sortedKeysOf(cfg.Hosts) {
 		marker := ""
 		if name == cfg.Defaults.DNSHost {
@@ -31,12 +31,12 @@ func cmdList(cfgPath string, args []string) int {
 		fmt.Printf("  %-12s %s%s\n", name, cfg.Hosts[name].IP, marker)
 	}
 
-	fmt.Printf("\nDomains (%d):\n", len(cfg.Domains))
+	fmt.Printf("\n%s== Domains (%d) ==%s\n", boldOn, len(cfg.Domains), boldOff)
 	for _, name := range sortedKeysOf(cfg.Domains) {
 		fmt.Printf("  %s\n", name)
 	}
 
-	fmt.Printf("\nServices (%d):\n", len(cfg.Services))
+	fmt.Printf("\n%s== Services (%d) ==%s\n", boldOn, len(cfg.Services), boldOff)
 	for _, name := range sortedKeysOf(cfg.Services) {
 		svc := cfg.Services[name]
 		fmt.Printf("  %-12s %s -> %s  (%s)\n", name, svc.FQDN, svc.Host, svc.Backend)
