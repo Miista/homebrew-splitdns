@@ -125,6 +125,29 @@ func (c *Config) DNSHost() string {
 	return c.Defaults.DNSHost
 }
 
+// MatchDomain returns the longest registrable domain in the domains map that
+// fqdn matches (exact or as a suffix), and whether any matched. e.g.
+// docs.example.com matches domain example.com.
+func (c *Config) MatchDomain(fqdn string) (string, bool) {
+	best := ""
+	for dom := range c.Domains {
+		if (fqdn == dom || strings.HasSuffix(fqdn, "."+dom)) && len(dom) > len(best) {
+			best = dom
+		}
+	}
+	return best, best != ""
+}
+
+// DomainNames returns the defined domain names, sorted.
+func (c *Config) DomainNames() []string {
+	out := make([]string, 0, len(c.Domains))
+	for d := range c.Domains {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ServicesUsingHost returns the names of services that depend on host `name`
 // (sorted): either it runs the service, or it is the resolver (dns_host) that
 // every service's DNS record is routed through.

@@ -68,13 +68,31 @@ func TestRun_AddCreatesConfig(t *testing.T) {
 	}
 }
 
-func TestRun_AddCreatesFreshConfig(t *testing.T) {
-	// No seed: add must create services.yaml from nothing.
+func TestRun_AddServiceRefusesUnknownFQDN(t *testing.T) {
+	// add must refuse a service whose fqdn matches no defined domain (catches
+	// typos like .dl for .dk) and NOT persist it.
 	dir := t.TempDir()
-	Run([]string{"-C", dir, "add", "service", "docs",
-		"--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000"})
-	if _, err := os.Stat(filepath.Join(dir, configName)); err != nil {
-		t.Errorf("add should create services.yaml even on empty repo: %v", err)
+	seed(t, dir) // defines example.com + hosts
+	code := Run([]string{"-C", dir, "add", "service", "docs",
+		"--fqdn", "docs.example.dl", "--host", "appbox", "--backend", "paperless:8000"})
+	if code != 1 {
+		t.Errorf("add with unmatched fqdn should exit 1, got %d", code)
+	}
+	if _, ok := load(t, dir).Services["docs"]; ok {
+		t.Error("service with unmatched fqdn must not be persisted")
+	}
+}
+
+func TestRun_AddServiceRefusesUnknownHost(t *testing.T) {
+	dir := t.TempDir()
+	seed(t, dir)
+	code := Run([]string{"-C", dir, "add", "service", "docs",
+		"--fqdn", "docs.example.com", "--host", "ghost", "--backend", "paperless:8000"})
+	if code != 1 {
+		t.Errorf("add with unknown host should exit 1, got %d", code)
+	}
+	if _, ok := load(t, dir).Services["docs"]; ok {
+		t.Error("service with unknown host must not be persisted")
 	}
 }
 
@@ -94,9 +112,11 @@ func TestRun_AddDuplicateFails(t *testing.T) {
 func TestRun_SyncReportsSkips(t *testing.T) {
 	dir := t.TempDir()
 	seed(t, dir)
-	// Add a service whose domain isn't defined -> skipped -> exit 1.
+	mkdirs(t, dir, "resolver", "appbox")
+	// Valid fqdn/host/domain (passes add) but a malformed backend — the planner
+	// skips it at sync -> exit 1. (add doesn't validate backend shape.)
 	Run([]string{"-C", dir, "add", "service", "x",
-		"--fqdn", "x.undefined.org", "--host", "resolver", "--backend", "a:1"})
+		"--fqdn", "x.example.com", "--host", "resolver", "--backend", "noport"})
 	if code := Run([]string{"-C", dir, "sync"}); code != 1 {
 		t.Errorf("sync with a skipped entry should exit 1, got %d", code)
 	}
@@ -148,9 +168,10 @@ func TestRun_List(t *testing.T) {
 		t.Errorf("list with all-valid state should exit 0, got %d", code)
 	}
 
-	// Add an invalid service -> list should exit 1.
+	// Add a service that passes add (valid fqdn/host/domain) but is skipped at
+	// plan time (malformed backend) -> list should exit 1.
 	Run([]string{"-C", dir, "add", "service", "bad",
-		"--fqdn", "bad.unknown.org", "--host", "appbox", "--backend", "x:1"})
+		"--fqdn", "bad.example.com", "--host", "appbox", "--backend", "noport"})
 	if code := Run([]string{"-C", dir, "list"}); code != 1 {
 		t.Errorf("list with a skipped service should exit 1, got %d", code)
 	}

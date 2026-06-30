@@ -224,6 +224,22 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 			return 1
 		}
 	}
+	// fqdn must fall under a defined domain — catch typos (e.g. .dl for .dk)
+	// before persisting, not as a skip at sync time.
+	if _, ok := cfg.MatchDomain(*fqdn); !ok {
+		errf("The fqdn %q matches no defined domain.", *fqdn)
+		if doms := cfg.DomainNames(); len(doms) > 0 {
+			hint("Defined domains: %s. Add one with 'shd add domain <name>' or fix the fqdn.", strings.Join(doms, ", "))
+		} else {
+			hint("No domains defined yet — run 'shd add domain <name>' first.")
+		}
+		return 1
+	}
+	// Host must exist too (else it'd persist then skip at sync).
+	if _, ok := cfg.Hosts[*host]; !ok {
+		errf("Unknown host %q — defined hosts: %s.", *host, strings.Join(sortedKeysOf(cfg.Hosts), ", "))
+		return 1
+	}
 	cfg.Services[name] = config.Service{FQDN: *fqdn, Host: *host, Backend: *backend}
 	if err := cfg.Save(); err != nil {
 		errf("%v", err)
