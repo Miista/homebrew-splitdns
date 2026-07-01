@@ -707,7 +707,7 @@ Other:
   sd apply                    Make config live on THIS host: restart pihole / validate+reload caddy. Run on each host. Refuses if the repo has drift.
   sd list                     Show current hosts, domains, and services (with validity).
   sd verify                   Check live DNS resolution per service (run on the resolver host; needs docker).
-  sd measure <service|fqdn>   Time the request breakdown (dns/connect/tls/ttfb); run from a client for client-perceived numbers.
+  sd measure [--compare] <service|fqdn>  Time the request breakdown (dns/connect/tls/ttfb). --compare A/Bs split-horizon vs public read-only (dns-host only).
   sd doctor [--fix]           Audit the repo (gitignored files, Caddyfile imports, generated-file drift); --fix reconciles files and .gitignore.
   sd version
   sd help
