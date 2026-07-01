@@ -8,12 +8,15 @@ import (
 	"strings"
 
 	"sd/internal/config"
+	syncpkg "sd/internal/sync"
 )
 
-// host/domain mutate the YAML but do NOT write generated files;
-// the schema key `hosts:` matches the `host` noun. A run that changes them is
-// followed by sync to regenerate affected services. Routing of the verb/noun
-// grammar lives in dispatchNoun (cli.go); these are the leaf handlers.
+// host/domain/dns-host mutate the YAML then reconcile (Complete mode) so the
+// generated files — chiefly the per-(host × domain) TLS snippets and DNS
+// records — are regenerated and any orphans GC'd immediately, leaving the repo
+// clean (no drift for `sd apply` to refuse on). The schema key `hosts:` matches
+// the `host` noun. Routing of the verb/noun grammar lives in dispatchNoun
+// (cli.go); these are the leaf handlers.
 
 func hostAdd(cfgPath string, args []string) int {
 	// Two positionals: <name> <ip>. The IP is the one piece of required data
@@ -68,7 +71,10 @@ func hostAdd(cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf("Added host %q (%s).\n", name, ip)
-	return 0
+	// Regenerate so the new host gets its per-domain TLS snippets right away,
+	// leaving the repo clean (no drift cliff before `sd apply`). Complete also
+	// GCs, which is a harmless no-op for a pure add.
+	return runSync(repoRoot, cfg, syncpkg.Complete)
 }
 
 func hostRemove(cfgPath string, args []string) int {
@@ -82,6 +88,7 @@ func hostRemove(cfgPath string, args []string) int {
 	if cfg == nil {
 		return code
 	}
+	repoRoot := filepath.Dir(cfgPath)
 	if _, exists := cfg.Hosts[name]; !exists {
 		fmt.Printf("Host %q does not exist; nothing to remove.\n", name)
 		return 0
@@ -97,7 +104,9 @@ func hostRemove(cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf("Removed host %q.\n", name)
-	return 0
+	// Complete reconcile GCs the removed host's now-orphaned TLS snippets so the
+	// repo is left clean.
+	return runSync(repoRoot, cfg, syncpkg.Complete)
 }
 
 func domainAdd(cfgPath string, args []string) int {
@@ -123,7 +132,9 @@ func domainAdd(cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf("Added domain %q.\n", name)
-	return 0
+	// Regenerate so the new domain's per-host TLS snippets exist right away,
+	// leaving the repo clean (no drift cliff before `sd apply`).
+	return runSync(filepath.Dir(cfgPath), cfg, syncpkg.Complete)
 }
 
 func domainRemove(cfgPath string, args []string) int {
@@ -152,7 +163,8 @@ func domainRemove(cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf("Removed domain %q.\n", name)
-	return 0
+	// Complete reconcile GCs the removed domain's TLS snippets across all hosts.
+	return runSync(filepath.Dir(cfgPath), cfg, syncpkg.Complete)
 }
 
 // cmdSetDNSHost handles `set dns-host <name>` — sets defaults.dns_host, the
@@ -180,5 +192,7 @@ func cmdSetDNSHost(cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf("Set default dns_host to %q.\n", name)
-	return 0
+	// The resolver changed, so every DNS record regenerates. Complete also GCs
+	// records from a previously-set resolver host, leaving the repo clean.
+	return runSync(filepath.Dir(cfgPath), cfg, syncpkg.Complete)
 }

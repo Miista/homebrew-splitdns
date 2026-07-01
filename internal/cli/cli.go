@@ -287,7 +287,7 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf(tick+" Added service %q\n", name)
-	return runSync(repoRoot, cfg)
+	return runSync(repoRoot, cfg, syncpkg.Incremental)
 }
 
 // syncBlockedReason returns a human-readable reason a sync cannot run at all
@@ -350,7 +350,7 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf(tick+" Updated service %q\n", name)
-	return runSync(repoRoot, cfg)
+	return runSync(repoRoot, cfg, syncpkg.Incremental)
 }
 
 func cmdRemove(repoRoot, cfgPath string, args []string) int {
@@ -388,6 +388,10 @@ func cmdRemove(repoRoot, cfgPath string, args []string) int {
 	} else {
 		fmt.Println(tick + " No generated files to delete")
 	}
+
+	// Deletions still need an apply (drop the vhost/record from running daemons).
+	printNextSteps(cfg, res)
+	reportDrift(detectDrift(repoRoot, cfg, mf))
 	return 0
 }
 
@@ -445,14 +449,21 @@ func cmdEnableDisable(repoRoot, cfgPath string, args []string, disable bool) int
 	}
 
 	fmt.Printf(tick+" Enabled service %q\n", name)
-	return runSync(repoRoot, cfg)
+	return runSync(repoRoot, cfg, syncpkg.Incremental)
 }
 
-// runSync builds the plan, reconciles (incremental: write/update, never delete),
-// reports, and returns an exit code (design §8). It is the single sync path,
-// invoked as the tail of a mutation (add/update/remove/enable/disable) rather
-// than reimplemented. Orphan GC is not done here — that is `sd doctor --fix`.
-func runSync(repoRoot string, cfg *config.Config) int {
+// runSync builds the plan, reconciles, reports, and returns an exit code
+// (design §8). It is the single sync path, invoked as the tail of every
+// mutation rather than reimplemented.
+//
+// Mode differs by mutation shape: service add/update/enable/disable use
+// Incremental (write/update, never delete — they can't orphan anything a plain
+// write wouldn't overwrite). remove-service and every host/domain/dns-host
+// mutation use Complete, because they can leave orphaned files (a removed
+// service's records, or a host/domain's now-dead cross-product of TLS
+// snippets) that must be GC'd so the repo is left clean and `sd apply` won't
+// refuse on drift.
+func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 	// Pre-flight: refuse before writing when a repo-wide precondition isn't met.
 	if reason := syncBlockedReason(cfg); reason != "" {
 		fmt.Fprintf(os.Stderr, cross+" Not synced: %s\n", reason)
@@ -470,7 +481,7 @@ func runSync(repoRoot string, cfg *config.Config) int {
 	mf := loadManifest(repoRoot, cfg)
 	eng := &syncpkg.Engine{RepoRoot: repoRoot, Manifest: mf}
 
-	res, err := eng.Reconcile(p, syncpkg.Incremental)
+	res, err := eng.Reconcile(p, mode)
 	if err != nil {
 		errf("%v", err)
 		return 1
@@ -521,17 +532,20 @@ func runSync(repoRoot string, cfg *config.Config) int {
 	return 0
 }
 
-// printNextSteps prints per-host commands to make written files live.
-// Only printed when files were actually written this run.
+// printNextSteps prints per-host commands to make changed files live. Printed
+// when files were created, updated, OR deleted — a deletion (e.g. a removed
+// service or host) also needs an apply to drop the vhost/record from the
+// running daemons.
 func printNextSteps(cfg *config.Config, res *syncpkg.Result) {
-	written := append(append([]string{}, res.Created...), res.Updated...)
-	if len(written) == 0 {
+	changed := append(append([]string{}, res.Created...), res.Updated...)
+	changed = append(changed, res.Deleted...)
+	if len(changed) == 0 {
 		return
 	}
 
 	dnsDirty := false
 	caddyDirty := map[string]bool{} // host name -> true
-	for _, path := range written {
+	for _, path := range changed {
 		if strings.Contains(path, "dnsmasq") {
 			dnsDirty = true
 		} else if strings.Contains(path, "caddy") {

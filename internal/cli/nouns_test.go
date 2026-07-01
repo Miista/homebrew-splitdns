@@ -183,10 +183,13 @@ func TestSync_RefusesWithoutDNSHost(t *testing.T) {
 		"--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000"}); code != 1 {
 		t.Errorf("sync without dns_host should exit 1, got %d", code)
 	}
-	// After setting it, a reconcile succeeds (doctor --fix regenerates files).
-	Run([]string{"-C", dir, "set", "dns-host", "appbox"})
-	if code := Run([]string{"-C", dir, "doctor", "--fix"}); code != 0 {
-		t.Errorf("doctor --fix after dns-host set should exit 0, got %d", code)
+	// set dns-host now reconciles itself: with the blocker resolved it succeeds
+	// (exit 0) and leaves the repo clean.
+	if code := Run([]string{"-C", dir, "set", "dns-host", "appbox"}); code != 0 {
+		t.Errorf("set dns-host after blocker resolved should exit 0, got %d", code)
+	}
+	if d := detectDrift(dir, load(t, dir), loadManifest(dir, load(t, dir))); d.Any() {
+		t.Errorf("repo should have no drift after set dns-host, got %d files", d.Count())
 	}
 }
 
@@ -246,33 +249,36 @@ func TestServiceRemove_NonexistentIsIdempotent(t *testing.T) {
 	}
 }
 
-// TLS snippets are generated per (host × domain). Removing a host must let
-// doctor --fix GC that host's now-orphaned snippet, even though the domain
-// (its manifest owner) still exists — the bug was per-file shrinkage of a
-// surviving owner. (GC moved from `sync --complete` into `doctor --fix`.)
-func TestDoctorFix_GCsTLSAfterHostRemoval(t *testing.T) {
+// TLS snippets are generated per (host × domain). host/domain mutations now
+// reconcile automatically (Complete mode), so `add domain` materializes every
+// host's snippet and `remove host` GCs that host's now-orphaned snippet — no
+// explicit reconcile step, and no drift left behind (the drift cliff before
+// `sd apply`). The surviving owner's other snippets must not be shrunk away.
+func TestHostRemoval_AutoGCsTLS(t *testing.T) {
 	dir := t.TempDir()
 	mkdirs(t, dir, "resolver", "appbox", "spare")
 	for _, h := range [][]string{{"resolver", "192.0.2.1"}, {"appbox", "192.0.2.2"}, {"spare", "192.0.2.9"}} {
 		Run([]string{"-C", dir, "add", "host", h[0], h[1]})
 	}
 	Run([]string{"-C", dir, "set", "dns-host", "resolver"})
+	// add domain reconciles: every host's TLS snippet exists immediately.
 	Run([]string{"-C", dir, "add", "domain", "example.com"})
-	// add domain/host only edit the YAML; a reconcile materializes the per-host
-	// TLS snippets. doctor --fix is the reconcile entry point.
-	Run([]string{"-C", dir, "doctor", "--fix"})
 
 	spareTLS := filepath.Join(dir, "spare", "caddy/data/tls/tls_example_com.caddy")
 	if _, err := os.Stat(spareTLS); err != nil {
-		t.Fatalf("spare's tls snippet should exist after reconcile: %v", err)
+		t.Fatalf("spare's tls snippet should exist right after add domain: %v", err)
+	}
+	// No drift cliff: the repo is clean after a mutation, so apply won't refuse.
+	if d := detectDrift(dir, load(t, dir), loadManifest(dir, load(t, dir))); d.Any() {
+		t.Errorf("repo should have no drift after add domain, got %d files", d.Count())
 	}
 
-	Run([]string{"-C", dir, "remove", "host", "spare"})
-	if code := Run([]string{"-C", dir, "doctor", "--fix"}); code != 0 {
-		t.Fatalf("doctor --fix should exit 0, got %d", code)
+	// remove host reconciles in Complete mode: GCs spare's orphaned snippet.
+	if code := Run([]string{"-C", dir, "remove", "host", "spare"}); code != 0 {
+		t.Fatalf("remove host should exit 0, got %d", code)
 	}
 	if _, err := os.Stat(spareTLS); !os.IsNotExist(err) {
-		t.Error("spare's tls snippet should be GC'd after host removal + doctor --fix")
+		t.Error("spare's tls snippet should be auto-GC'd on host removal")
 	}
 	// The surviving hosts' snippets must remain.
 	if _, err := os.Stat(filepath.Join(dir, "appbox", "caddy/data/tls/tls_example_com.caddy")); err != nil {
@@ -280,22 +286,18 @@ func TestDoctorFix_GCsTLSAfterHostRemoval(t *testing.T) {
 	}
 }
 
-// Domain removal GC's all its snippets across every host.
-func TestDoctorFix_GCsTLSAfterDomainRemoval(t *testing.T) {
+// Domain removal auto-GC's all its snippets across every host.
+func TestDomainRemoval_AutoGCsTLS(t *testing.T) {
 	dir := t.TempDir()
 	mkdirs(t, dir, "resolver")
 	Run([]string{"-C", dir, "add", "host", "resolver", "192.0.2.1"})
 	Run([]string{"-C", dir, "set", "dns-host", "resolver"})
 	Run([]string{"-C", dir, "add", "domain", "example.com"})
-	// Materialize the snippet first (add domain only edits YAML), so the GC below
-	// is a real deletion, not a trivially-absent file.
-	Run([]string{"-C", dir, "doctor", "--fix"})
 	tls := filepath.Join(dir, "resolver", "caddy/data/tls/tls_example_com.caddy")
 	if _, err := os.Stat(tls); err != nil {
-		t.Fatalf("domain's tls snippet should exist after reconcile: %v", err)
+		t.Fatalf("domain's tls snippet should exist right after add domain: %v", err)
 	}
 	Run([]string{"-C", dir, "remove", "domain", "example.com"})
-	Run([]string{"-C", dir, "doctor", "--fix"})
 	if _, err := os.Stat(tls); !os.IsNotExist(err) {
 		t.Error("removed domain's tls snippet should be GC'd")
 	}
