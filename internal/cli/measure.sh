@@ -38,8 +38,11 @@ for i in $(seq 1 $N); do
         -w "%{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{time_total}" \
         "$URL") || true
     dns+=($d) connect+=($c) tls+=($t) ttfb+=($s) total+=($o)
-    printf "  run %d: dns=%.0fms connect=%.0fms tls=%.0fms ttfb=%.0fms total=%.0fms\n" \
-        $i $(echo "$d*1000"|bc) $(echo "$c*1000"|bc) $(echo "$t*1000"|bc) $(echo "$s*1000"|bc) $(echo "$o*1000"|bc)
+    # awk (not bc — not installed everywhere, e.g. optiplex) converts s -> ms.
+    awk -v i="$i" -v d="$d" -v c="$c" -v t="$t" -v s="$s" -v o="$o" 'BEGIN {
+        printf "  run %d: dns=%.0fms connect=%.0fms tls=%.0fms ttfb=%.0fms total=%.0fms\n", \
+            i, d*1000, c*1000, t*1000, s*1000, o*1000
+    }' /dev/null
 done
 
 echo ""
