@@ -41,7 +41,9 @@ func cmdVerify(cfgPath string, args []string) int {
 	}
 	fmt.Printf("Running on host %q.\n", self)
 
-	warnIfIgnored(filepath.Dir(cfgPath), plan.Build(cfg))
+	repoRoot := filepath.Dir(cfgPath)
+	warnIfIgnored(repoRoot, plan.Build(cfg))
+	reportDrift(detectDrift(repoRoot, cfg, loadManifest(repoRoot, cfg)))
 
 	// Which services to check: one fqdn, or all.
 	var services []string

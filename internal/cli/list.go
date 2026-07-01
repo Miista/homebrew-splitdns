@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 )
 
@@ -45,6 +46,9 @@ func cmdList(cfgPath string, args []string) int {
 			fmt.Printf("  %-12s %s -> %s  (%s)\n", name, svc.FQDN, svc.Host, svc.Backend)
 		}
 	}
+
+	repoRoot := filepath.Dir(cfgPath)
+	reportDrift(detectDrift(repoRoot, cfg, loadManifest(repoRoot, cfg)))
 	return 0
 }
 

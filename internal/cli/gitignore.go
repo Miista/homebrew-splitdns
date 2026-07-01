@@ -11,6 +11,7 @@ import (
 
 	"sd/internal/config"
 	"sd/internal/plan"
+	syncpkg "sd/internal/sync"
 )
 
 // planPaths returns the unique repo-relative paths a plan would write.
@@ -119,7 +120,49 @@ func cmdDoctor(cfgPath string, args []string) int {
 	// --- Caddyfile import line check ---
 	problems += checkCaddyfileImports(repoRoot, cfg, fix)
 
+	// --- generated-file drift check (missing / modified / orphaned) ---
+	problems += checkDrift(repoRoot, cfg, fix)
+
 	if problems > 0 {
+		return 1
+	}
+	return 0
+}
+
+// checkDrift reports (and with fix, repairs) drift between services.yaml and the
+// generated files on disk. Repair is a full Complete reconcile: it rewrites
+// missing/modified files and GCs orphaned tracked files — subsuming what the old
+// `sync --complete` command did.
+func checkDrift(repoRoot string, cfg *config.Config, fix bool) int {
+	mf := loadManifest(repoRoot, cfg)
+	d := detectDrift(repoRoot, cfg, mf)
+	if !d.Any() {
+		fmt.Println(tick + " Generated files are in sync with services.yaml.")
+		return 0
+	}
+
+	if !fix {
+		fmt.Printf(cross+" %d generated %s out of sync with services.yaml:\n", d.Count(), plural(d.Count(), "file"))
+		printDriftDetail(d)
+		fmt.Println("\nRun 'sd doctor --fix' to reconcile (regenerate missing/modified, remove orphaned).")
+		return 1
+	}
+
+	// Fix: full reconcile in Complete mode — regenerates and GCs in one pass.
+	eng := &syncpkg.Engine{RepoRoot: repoRoot, Manifest: mf}
+	res, err := eng.Reconcile(plan.Build(cfg), syncpkg.Complete)
+	if err != nil {
+		errf("%v", err)
+		return 1
+	}
+	n := len(res.Created) + len(res.Updated) + len(res.Deleted)
+	fmt.Printf(tick+" Reconciled %d generated %s (%d created, %d updated, %d removed).\n",
+		n, plural(n, "file"), len(res.Created), len(res.Updated), len(res.Deleted))
+
+	// Re-check to confirm the repo is now clean.
+	if still := detectDrift(repoRoot, cfg, mf); still.Any() {
+		errf("Drift remains after fix (%d %s):", still.Count(), plural(still.Count(), "file"))
+		printDriftDetail(still)
 		return 1
 	}
 	return 0

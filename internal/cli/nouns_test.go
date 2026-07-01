@@ -183,10 +183,10 @@ func TestSync_RefusesWithoutDNSHost(t *testing.T) {
 		"--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000"}); code != 1 {
 		t.Errorf("sync without dns_host should exit 1, got %d", code)
 	}
-	// After setting it, sync succeeds.
+	// After setting it, a reconcile succeeds (doctor --fix regenerates files).
 	Run([]string{"-C", dir, "set", "dns-host", "appbox"})
-	if code := Run([]string{"-C", dir, "sync"}); code != 0 {
-		t.Errorf("sync after dns-host set should exit 0, got %d", code)
+	if code := Run([]string{"-C", dir, "doctor", "--fix"}); code != 0 {
+		t.Errorf("doctor --fix after dns-host set should exit 0, got %d", code)
 	}
 }
 
@@ -247,10 +247,10 @@ func TestServiceRemove_NonexistentIsIdempotent(t *testing.T) {
 }
 
 // TLS snippets are generated per (host × domain). Removing a host must let
-// sync --complete GC that host's now-orphaned snippet, even though the domain
+// doctor --fix GC that host's now-orphaned snippet, even though the domain
 // (its manifest owner) still exists — the bug was per-file shrinkage of a
-// surviving owner.
-func TestSyncComplete_GCsTLSAfterHostRemoval(t *testing.T) {
+// surviving owner. (GC moved from `sync --complete` into `doctor --fix`.)
+func TestDoctorFix_GCsTLSAfterHostRemoval(t *testing.T) {
 	dir := t.TempDir()
 	mkdirs(t, dir, "resolver", "appbox", "spare")
 	for _, h := range [][]string{{"resolver", "192.0.2.1"}, {"appbox", "192.0.2.2"}, {"spare", "192.0.2.9"}} {
@@ -258,19 +258,21 @@ func TestSyncComplete_GCsTLSAfterHostRemoval(t *testing.T) {
 	}
 	Run([]string{"-C", dir, "set", "dns-host", "resolver"})
 	Run([]string{"-C", dir, "add", "domain", "example.com"})
-	Run([]string{"-C", dir, "sync"})
+	// add domain/host only edit the YAML; a reconcile materializes the per-host
+	// TLS snippets. doctor --fix is the reconcile entry point.
+	Run([]string{"-C", dir, "doctor", "--fix"})
 
 	spareTLS := filepath.Join(dir, "spare", "caddy/data/tls/tls_example_com.caddy")
 	if _, err := os.Stat(spareTLS); err != nil {
-		t.Fatalf("spare's tls snippet should exist after sync: %v", err)
+		t.Fatalf("spare's tls snippet should exist after reconcile: %v", err)
 	}
 
 	Run([]string{"-C", dir, "remove", "host", "spare"})
-	if code := Run([]string{"-C", dir, "sync", "--complete"}); code != 0 {
-		t.Fatalf("sync --complete should exit 0, got %d", code)
+	if code := Run([]string{"-C", dir, "doctor", "--fix"}); code != 0 {
+		t.Fatalf("doctor --fix should exit 0, got %d", code)
 	}
 	if _, err := os.Stat(spareTLS); !os.IsNotExist(err) {
-		t.Error("spare's tls snippet should be GC'd after host removal + sync --complete")
+		t.Error("spare's tls snippet should be GC'd after host removal + doctor --fix")
 	}
 	// The surviving hosts' snippets must remain.
 	if _, err := os.Stat(filepath.Join(dir, "appbox", "caddy/data/tls/tls_example_com.caddy")); err != nil {
@@ -279,16 +281,22 @@ func TestSyncComplete_GCsTLSAfterHostRemoval(t *testing.T) {
 }
 
 // Domain removal GC's all its snippets across every host.
-func TestSyncComplete_GCsTLSAfterDomainRemoval(t *testing.T) {
+func TestDoctorFix_GCsTLSAfterDomainRemoval(t *testing.T) {
 	dir := t.TempDir()
 	mkdirs(t, dir, "resolver")
 	Run([]string{"-C", dir, "add", "host", "resolver", "192.0.2.1"})
 	Run([]string{"-C", dir, "set", "dns-host", "resolver"})
 	Run([]string{"-C", dir, "add", "domain", "example.com"})
-	Run([]string{"-C", dir, "sync"})
+	// Materialize the snippet first (add domain only edits YAML), so the GC below
+	// is a real deletion, not a trivially-absent file.
+	Run([]string{"-C", dir, "doctor", "--fix"})
+	tls := filepath.Join(dir, "resolver", "caddy/data/tls/tls_example_com.caddy")
+	if _, err := os.Stat(tls); err != nil {
+		t.Fatalf("domain's tls snippet should exist after reconcile: %v", err)
+	}
 	Run([]string{"-C", dir, "remove", "domain", "example.com"})
-	Run([]string{"-C", dir, "sync", "--complete"})
-	if _, err := os.Stat(filepath.Join(dir, "resolver", "caddy/data/tls/tls_example_com.caddy")); !os.IsNotExist(err) {
+	Run([]string{"-C", dir, "doctor", "--fix"})
+	if _, err := os.Stat(tls); !os.IsNotExist(err) {
 		t.Error("removed domain's tls snippet should be GC'd")
 	}
 }

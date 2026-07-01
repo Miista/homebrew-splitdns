@@ -34,10 +34,10 @@ services: {}
 	}
 }
 
-func TestRun_SyncMissingConfig(t *testing.T) {
+func TestRun_ApplyMissingConfig(t *testing.T) {
 	dir := t.TempDir()
-	if code := Run([]string{"-C", dir, "sync"}); code != 1 {
-		t.Errorf("sync on missing services.yaml should exit 1, got %d", code)
+	if code := Run([]string{"-C", dir, "apply"}); code != 1 {
+		t.Errorf("apply on missing services.yaml should exit 1, got %d", code)
 	}
 }
 
@@ -114,11 +114,12 @@ func TestRun_SyncReportsSkips(t *testing.T) {
 	seed(t, dir)
 	mkdirs(t, dir, "resolver", "appbox")
 	// Valid fqdn/host/domain (passes add) but a malformed backend — the planner
-	// skips it at sync -> exit 1. (add doesn't validate backend shape.)
-	Run([]string{"-C", dir, "add", "service", "x",
+	// skips it during add's sync tail -> exit 1. (add doesn't validate backend
+	// shape, so the skip surfaces at reconcile time.)
+	code := Run([]string{"-C", dir, "add", "service", "x",
 		"--fqdn", "x.example.com", "--host", "resolver", "--backend", "noport"})
-	if code := Run([]string{"-C", dir, "sync"}); code != 1 {
-		t.Errorf("sync with a skipped entry should exit 1, got %d", code)
+	if code != 1 {
+		t.Errorf("add with a skipped entry should exit 1, got %d", code)
 	}
 }
 

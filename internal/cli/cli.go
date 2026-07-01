@@ -132,8 +132,8 @@ func Run(args []string) int {
 		return cmdVerify(cfgPath, rest)
 	case "doctor":
 		return cmdDoctor(cfgPath, rest)
-	case "sync":
-		return cmdSync(repoRoot, cfgPath, rest)
+	case "apply":
+		return cmdApply(repoRoot, cfgPath, rest)
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -287,62 +287,7 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf(tick+" Added service %q\n", name)
-	return runSync(repoRoot, cfg, syncOpts{mode: syncpkg.Incremental, afterMutation: true})
-}
-
-// printVerbose lists every generated file grouped by its owner — services by
-// name, then a "shared" group for the per-domain TLS snippets — each path
-// marked by what the sync did to it (+ created, ~ updated, = unchanged), plus
-// a trailing group for deletions.
-func printVerbose(p *plan.Plan, res *syncpkg.Result) {
-	mark := map[string]string{}
-	for _, f := range res.Created {
-		mark[f] = "+"
-	}
-	for _, f := range res.Updated {
-		mark[f] = "~"
-	}
-	for _, f := range res.Unchanged {
-		mark[f] = "="
-	}
-
-	group := func(title string, files []plan.File) {
-		if len(files) == 0 {
-			return
-		}
-		fmt.Printf("  %s\n", title)
-		paths := make([]string, 0, len(files))
-		for _, f := range files {
-			paths = append(paths, f.Path)
-		}
-		sort.Strings(paths)
-		for _, path := range paths {
-			m := mark[path]
-			if m == "" {
-				m = "="
-			}
-			fmt.Printf("    %s %s\n", m, path)
-		}
-	}
-
-	// Services in sync order, then shared TLS owners.
-	for _, name := range res.Synced {
-		group(name, p.Files[name])
-	}
-	for _, owner := range sortedKeysOf(p.Files) {
-		if plan.IsDomainOwner(owner) {
-			group("shared TLS for "+plan.DomainOf(owner), p.Files[owner])
-		} else if plan.IsSyntheticOwner(owner) {
-			group("sd.generated.caddy", p.Files[owner])
-		}
-	}
-
-	if len(res.Deleted) > 0 {
-		fmt.Println("  deleted")
-		for _, d := range res.Deleted {
-			fmt.Printf("    - %s\n", d)
-		}
-	}
+	return runSync(repoRoot, cfg)
 }
 
 // syncBlockedReason returns a human-readable reason a sync cannot run at all
@@ -405,7 +350,7 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 		return 1
 	}
 	fmt.Printf(tick+" Updated service %q\n", name)
-	return runSync(repoRoot, cfg, syncOpts{mode: syncpkg.Incremental, afterMutation: true})
+	return runSync(repoRoot, cfg)
 }
 
 func cmdRemove(repoRoot, cfgPath string, args []string) int {
@@ -500,57 +445,18 @@ func cmdEnableDisable(repoRoot, cfgPath string, args []string, disable bool) int
 	}
 
 	fmt.Printf(tick+" Enabled service %q\n", name)
-	return runSync(repoRoot, cfg, syncOpts{mode: syncpkg.Incremental, afterMutation: true})
+	return runSync(repoRoot, cfg)
 }
 
-func cmdSync(repoRoot, cfgPath string, args []string) int {
-	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
-	incremental := fs.Bool("incremental", false, "write/update only, never delete (default)")
-	complete := fs.Bool("complete", false, "incremental plus GC of orphaned tracked files")
-	verbose := fs.Bool("verbose", false, "list every generated file, not just changes")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if *incremental && *complete {
-		errf("The --incremental and --complete flags are mutually exclusive.")
-		return 2
-	}
-	mode := syncpkg.Incremental
-	if *complete {
-		mode = syncpkg.Complete
-	}
-
-	cfg, code := loadExisting(cfgPath, "sync")
-	if cfg == nil {
-		return code
-	}
-	return runSync(repoRoot, cfg, syncOpts{mode: mode, verbose: *verbose})
-}
-
-// syncOpts controls how runSync reports. The reconcile itself is identical
-// whether invoked by the `sync` command or as the second phase of add/update;
-// only the framing differs.
-type syncOpts struct {
-	mode    syncpkg.Mode
-	verbose bool
-	// afterMutation: invoked as the tail of add/update. The output is identical
-	// to a plain sync; only a *blocked* sync differs — the YAML change is
-	// already saved, so it reads "✗ Not synced" rather than "Cannot sync".
-	afterMutation bool
-}
-
-// runSync builds the plan, reconciles, reports, and returns an exit code
-// (design §8). It is the single sync path; add/update call it with
-// afterMutation set rather than reimplementing it.
-func runSync(repoRoot string, cfg *config.Config, o syncOpts) int {
+// runSync builds the plan, reconciles (incremental: write/update, never delete),
+// reports, and returns an exit code (design §8). It is the single sync path,
+// invoked as the tail of a mutation (add/update/remove/enable/disable) rather
+// than reimplemented. Orphan GC is not done here — that is `sd doctor --fix`.
+func runSync(repoRoot string, cfg *config.Config) int {
 	// Pre-flight: refuse before writing when a repo-wide precondition isn't met.
 	if reason := syncBlockedReason(cfg); reason != "" {
-		if o.afterMutation {
-			fmt.Fprintf(os.Stderr, cross+" Not synced: %s\n", reason)
-			hint("  The change is saved in services.yaml. Run 'sd sync' once that's resolved.")
-		} else {
-			errf("Cannot sync: %s", reason)
-		}
+		fmt.Fprintf(os.Stderr, cross+" Not synced: %s\n", reason)
+		hint("  The change is saved in services.yaml. Run 'sd doctor --fix' once that's resolved.")
 		return 1
 	}
 
@@ -564,7 +470,7 @@ func runSync(repoRoot string, cfg *config.Config, o syncOpts) int {
 	mf := loadManifest(repoRoot, cfg)
 	eng := &syncpkg.Engine{RepoRoot: repoRoot, Manifest: mf}
 
-	res, err := eng.Reconcile(p, o.mode)
+	res, err := eng.Reconcile(p, syncpkg.Incremental)
 	if err != nil {
 		errf("%v", err)
 		return 1
@@ -582,9 +488,7 @@ func runSync(repoRoot string, cfg *config.Config, o syncOpts) int {
 		fmt.Println("Note: no domains defined — run 'sd add domain <name>' (a service's fqdn must match a domain).")
 	}
 
-	if o.verbose {
-		printVerbose(p, res)
-	} else {
+	{
 		// List only services whose files actually changed this run. A no-op
 		// sync lists nothing; an add/update lists just the touched service
 		// (plus any other service that incidentally changed — which is the
@@ -609,6 +513,11 @@ func runSync(repoRoot string, cfg *config.Config, o syncOpts) int {
 	}
 
 	printNextSteps(cfg, res)
+
+	// Report (but don't fix) any residual drift — chiefly orphaned files, since
+	// the incremental reconcile above never deletes. Points the user at
+	// 'sd doctor --fix'. add/update/remove proceed regardless (report-but-proceed).
+	reportDrift(detectDrift(repoRoot, cfg, mf))
 	return 0
 }
 
@@ -641,21 +550,23 @@ func printNextSteps(cfg *config.Config, res *syncpkg.Result) {
 	}
 
 	self := localHost(cfg)
-	fmt.Println("\nTo make changes live:")
+
+	// Collect the set of hosts that need `sd apply` run on them: the DNS host
+	// (if its records changed) plus every caddy host whose files changed.
+	needApply := map[string]bool{}
 	if dnsDirty {
-		h := cfg.Defaults.DNSHost
-		if h == self {
-			fmt.Println("  docker restart pihole  # reloaddns does not reload conf-dir in pihole v6")
-		} else {
-			fmt.Printf("  on %s:  docker restart pihole\n", h)
-		}
+		needApply[cfg.Defaults.DNSHost] = true
 	}
-	for _, name := range sortedKeysOf(caddyDirty) {
-		cmd := "docker exec caddy caddy reload --config /etc/caddy/Caddyfile"
+	for name := range caddyDirty {
+		needApply[name] = true
+	}
+
+	fmt.Println("\nTo make changes live, run 'sd apply' on each host:")
+	for _, name := range sortedKeysOf(needApply) {
 		if name == self {
-			fmt.Printf("  %s\n", cmd)
+			fmt.Println("  sd apply  # here")
 		} else {
-			fmt.Printf("  on %s:  %s\n", name, cmd)
+			fmt.Printf("  on %s:  sd apply\n", name)
 		}
 	}
 }
@@ -767,7 +678,7 @@ Services (an app reached at an fqdn, on a host, under a domain):
   sd update  service <name> [--fqdn ...] [--host ...] [--backend ...]
   sd remove  service <name>
   sd disable service <name>   Stop generating DNS/Caddy config for a service (keeps it in services.yaml).
-  sd enable  service <name>   Re-enable a disabled service and sync.
+  sd enable  service <name>   Re-enable a disabled service (regenerates its files).
 
 Building blocks (a service references a host and a domain):
   sd add    host   <name> <ip>
@@ -777,10 +688,10 @@ Building blocks (a service references a host and a domain):
   sd set    dns-host <name>    Set the default resolver host for DNS records.
 
 Other:
-  sd sync   [--incremental | --complete]
+  sd apply                    Make config live on THIS host: restart pihole / validate+reload caddy. Run on each host. Refuses if the repo has drift.
   sd list                     Show current hosts, domains, and services (with validity).
   sd verify                   Check live DNS resolution per service (run on the resolver host; needs docker).
-  sd doctor [--fix]           Audit the repo (e.g. gitignored generated files); --fix applies .gitignore entries.
+  sd doctor [--fix]           Audit the repo (gitignored files, Caddyfile imports, generated-file drift); --fix reconciles files and .gitignore.
   sd version
   sd help
 
@@ -789,8 +700,10 @@ Global flags:
 
 Notes:
   - A host's name is its repo directory (e.g. host "pi" -> ./pi/), which must already exist.
-  - On sync, each domain gets a TLS snippet generated on every host, deriving cert paths from
+  - Each domain gets a TLS snippet generated on every host, deriving cert paths from
     the convention caddy/data/certs/<domain>/{fullchain.cer,privkey.key}.
+  - Config edits (add/update/remove/enable/disable) regenerate files automatically, then
+    print which hosts to run 'sd apply' on to make the change live.
   - Removing a host or domain is refused while any service still references it.
 `)
 }
