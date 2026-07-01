@@ -125,10 +125,17 @@ cert to every host, so the snippet is valid everywhere). Cert paths follow the f
 `/etc/caddy/certs/<domain>/{fullchain.cer,privkey.key}`. These files are owned/tracked under a
 synthetic manifest key per domain and GC'd by `sync --complete` when a domain or host is removed.
 
-### 4.4 Caddyfile integration (one-time, manual, documented — not done by the tool)
-Each host's main `Caddyfile` should contain `import tls/*.caddy` and `import sites/*.caddy`. The
-tool writes only into `tls/` and `sites/`; it never edits the main Caddyfile. Document this as a
-setup prerequisite.
+### 4.4 Caddyfile integration
+
+Each host's main `Caddyfile` must import `sd.generated.caddy`, which in turn imports
+`tls/*.caddy` and `sites/*.caddy`. The tool never edits the main `Caddyfile` directly.
+
+`sd sync` writes `sd.generated.caddy` and tracks it in the manifest under the synthetic key
+`@caddy-import`. Its content is fixed (two glob imports) and never changes after the first write,
+but sync ensures it exists on every run. It is not counted as a service in sync output.
+
+`sd doctor` checks that each host's `Caddyfile` contains the import line.
+`sd doctor --fix` appends it if missing.
 
 ## 5. Manifest
 

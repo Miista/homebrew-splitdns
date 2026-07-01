@@ -91,9 +91,9 @@ func (e *Engine) Reconcile(p *plan.Plan, mode Mode) (*Result, error) {
 			paths = append(paths, f.Path)
 		}
 		e.Manifest.Set(svc, paths)
-		// Synthetic per-domain TLS owners are written and tracked like anything
-		// else, but they aren't services — keep them out of the service count.
-		if !plan.IsDomainOwner(svc) {
+		// Synthetic owners (per-domain TLS, caddy-import) are written and tracked
+		// like anything else, but they aren't services — keep them out of the count.
+		if !plan.IsSyntheticOwner(svc) {
 			res.Synced = append(res.Synced, svc)
 		}
 	}
