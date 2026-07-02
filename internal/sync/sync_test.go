@@ -12,7 +12,7 @@ import (
 func newEngine(t *testing.T) (*Engine, string) {
 	t.Helper()
 	root := t.TempDir()
-	mf, _ := manifest.Load(filepath.Join(root, "sd-manifest.yaml"))
+	mf, _ := manifest.Load(filepath.Join(root, "splitdns-manifest.yaml"))
 	return &Engine{RepoRoot: root, Manifest: mf}, root
 }
 

@@ -186,7 +186,7 @@ repo directory).
 
 ## Manifest
 
-`sd-manifest.yaml` (repo root, **committed to git**) records which files each service
+`splitdns-manifest.yaml` (repo root, **committed to git**) records which files each service
 generated. It is the authority for safe deletion: only manifest-tracked files are ever deleted,
 and files not in the manifest are never touched. If lost or corrupt, it is rebuilt from
 `services.yaml` on the next run.

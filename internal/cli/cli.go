@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	configName   = "services.yaml"
-	manifestName = "sd-manifest.yaml"
+	configName         = "services.yaml"
+	manifestName       = "splitdns-manifest.yaml"
+	legacyManifestName = "sd-manifest.yaml" // pre-rename; migrated on first load
 )
 
 // Version is the build version, overridden at release time via
@@ -613,12 +614,26 @@ func changedServices(p *plan.Plan, res *syncpkg.Result) []string {
 // loadManifest loads the manifest, rebuilding it if unparseable (design §5/§7).
 func loadManifest(repoRoot string, cfg *config.Config) *manifest.Manifest {
 	mfPath := filepath.Join(repoRoot, manifestName)
+	// Migrate the pre-rename manifest so its tracked-file history (the GC
+	// authority) survives the sd -> splitdns rename. Rebuild would lose
+	// knowledge of files whose service was since removed.
+	if legacy := filepath.Join(repoRoot, legacyManifestName); fileExists(legacy) && !fileExists(mfPath) {
+		if err := os.Rename(legacy, mfPath); err == nil {
+			fmt.Fprintf(os.Stderr, "Migrated %s -> %s (commit the rename).\n", legacyManifestName, manifestName)
+		}
+	}
 	mf, ok := manifest.Load(mfPath)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "Warning: %s is unreadable — rebuilding it from %s.\n", manifestName, configName)
 		mf = manifest.Rebuild(mfPath, repoRoot, plan.Build(cfg))
 	}
 	return mf
+}
+
+// fileExists reports whether path exists (any type).
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // splitSkipped separates disabled services from validation-errored ones.
