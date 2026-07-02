@@ -168,7 +168,7 @@ photos:
 
 ## 6. Commands
 
-All commands operate on `services.yaml` in the current directory; `-C <dir>` runs as if
+All commands operate on `services.yaml` in `~/docker` by default; `-C <dir>` runs as if
 started in `<dir>` (git-style). There is no environment variable for the repo path. Commands
 are **verb-first**: `<verb> <noun> <args>` (e.g. `add domain example.com`) — one consistent
 word order across services, hosts, and domains.

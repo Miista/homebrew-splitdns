@@ -64,15 +64,16 @@ Requires Go 1.26+.
 go build -o splitdns .   # or: go install .
 ```
 
-The tool operates on `services.yaml` in the **current directory** (or `-C <dir>`); there is no
-environment variable to configure. Check the version with `splitdns version`.
+The tool operates on `services.yaml` in **`~/docker`** by default; `-C <dir>`
+overrides it (git-style). There is no environment variable to configure. Check
+the version with `splitdns version`.
 
 ## Quick start
 
 Bootstrap a usable `services.yaml` entirely from the CLI — no hand-editing required:
 
 ```sh
-cd ~/homelab            # your monorepo checkout
+# Commands operate on ~/docker by default; pass -C <dir> for another checkout.
 
 # 1. Declare the hosts (a host's name IS its repo directory, which must exist)
 splitdns add host resolver 192.0.2.1
@@ -132,7 +133,7 @@ splitdns [-C <dir>] list
 splitdns [-C <dir>] verify
 splitdns [-C <dir>] version
 
-  -C <dir>   run as if splitdns were started in <dir> (default: current directory)
+  -C <dir>   operate on <dir> instead of the default ~/docker
 ```
 
 | Command | Behavior |

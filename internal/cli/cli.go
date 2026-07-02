@@ -685,7 +685,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `splitdns — Split-Horizon DNS (Manager)
 
 Generates split-horizon DNS records and Caddy site blocks from a declarative
-services.yaml. Operates on the file in the current directory by default.
+services.yaml. Operates on ~/docker by default; -C <dir> overrides.
 
 Commands are verb-first: <verb> <noun> <args>.
 
@@ -713,7 +713,7 @@ Other:
   splitdns help
 
 Global flags:
-  -C <dir>   Run as if splitdns were started in <dir> (default: current directory).
+  -C <dir>   Operate on <dir> instead of the default ~/docker.
 
 Notes:
   - A host's name is its repo directory (e.g. host "pi" -> ./pi/), which must already exist.
