@@ -42,16 +42,21 @@ func cmdMeasure(cfgPath string, args []string) int {
 	fs := flag.NewFlagSet("measure", flag.ContinueOnError)
 	compare := fs.Bool("compare", false, "A/B split-horizon vs public via --resolve (dns-host only; read-only)")
 	fs.BoolVar(compare, "ab", false, "alias for --compare")
-	if err := fs.Parse(args); err != nil {
+	// Accept the target on either side of the flags — `measure mealie --compare`
+	// and `measure --compare mealie` both work (flag.Parse alone would silently
+	// drop a flag that follows the positional).
+	target, rest, ok := leadingName(args)
+	if err := fs.Parse(rest); err != nil {
 		return 2
 	}
-	rest := fs.Args()
-	if len(rest) < 1 {
-		errf("Missing the <service>, <fqdn>, or <url> to measure.")
-		hint("Usage: splitdns measure [--compare] <service|fqdn|url>")
-		return 2
+	if !ok {
+		if fs.NArg() < 1 {
+			errf("Missing the <service>, <fqdn>, or <url> to measure.")
+			hint("Usage: splitdns measure [--compare] <service|fqdn|url>")
+			return 2
+		}
+		target = fs.Arg(0)
 	}
-	target := rest[0]
 
 	// A full URL is measured as-is — no config involved.
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
