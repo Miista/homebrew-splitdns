@@ -36,7 +36,7 @@ the `homebrew-` prefix.)
 ### Debian / Ubuntu (apt)
 
 ```sh
-curl -fsSL https://miista.github.io/homebrew-sd/setup.sh | sudo sh
+curl -fsSL https://apt.guldmund.dk/setup.sh | sudo sh
 sudo apt install splitdns
 ```
 
@@ -45,10 +45,10 @@ setup explicitly:
 
 ```sh
 sudo install -d /etc/apt/keyrings
-curl -fsSL https://miista.github.io/homebrew-sd/splitdns-archive-keyring.asc \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/splitdns-archive-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/splitdns-archive-keyring.gpg] https://miista.github.io/homebrew-sd stable main" \
-  | sudo tee /etc/apt/sources.list.d/splitdns.list
+curl -fsSL https://apt.guldmund.dk/guldmund-archive-keyring.asc \
+  | sudo tee /etc/apt/keyrings/guldmund-archive-keyring.asc > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/guldmund-archive-keyring.asc] https://apt.guldmund.dk stable main" \
+  | sudo tee /etc/apt/sources.list.d/guldmund.list
 sudo apt update && sudo apt install splitdns
 ```
 

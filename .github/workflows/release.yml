@@ -4,12 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: {}
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -30,89 +32,86 @@ jobs:
           # GITHUB_TOKEN suffices, no PAT needed.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Keep the built .deb artifacts for the apt-repo job.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: debs
-          path: dist/*.deb
-          if-no-files-found: error
-
-  # Build a signed APT repository and publish it to GitHub Pages, so managed
-  # hosts can `apt install splitdns` from https://miista.github.io/homebrew-sd/.
+  # Rebuild the shared apt repo (docker-pin + splitdns, latest release of each)
+  # and deploy it to Cloudflare Pages (apt.guldmund.dk). Stateless: the GitHub
+  # releases are the source of truth; each publish is a full fresh tree.
+  # The same job exists in Miista/homebrew-sd — keep them in sync.
   apt-repo:
     needs: release
+    if: always() && !cancelled() && !failure()
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push to gh-pages
+      contents: read
     steps:
-      - uses: actions/checkout@v5 # for the public key + index.html
+      - name: Install reprepro
+        run: sudo apt-get update -q && sudo apt-get install -y -q reprepro
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: debs
-          path: incoming
+      - name: Import GPG signing key
+        run: echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --batch --import
 
-      - name: Install repo tooling
-        run: sudo apt-get update && sudo apt-get install -y apt-utils gnupg
-
-      - name: Import signing key
+      - name: Download latest .debs from both repos
         env:
-          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
-          mkdir -p ~/.gnupg
-          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
-          gpgconf --kill gpg-agent || true
+          gh release download --repo Miista/homebrew-docker-pin --pattern '*.deb' --dir /tmp/debs
+          gh release download --repo Miista/homebrew-sd --pattern '*.deb' --dir /tmp/debs
 
-      - name: Build signed apt repo
-        env:
-          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+      - name: Build apt repository
         run: |
           set -euo pipefail
-          # Single flat suite "stable", component "main", both arches. Layout:
-          #   pool/main/            <- the .deb files
-          #   dists/stable/main/binary-{amd64,arm64}/Packages{,.gz}
-          #   dists/stable/{Release,Release.gpg,InRelease}
-          ROOT=public
-          POOL=$ROOT/pool/main
-          mkdir -p "$POOL"
-          cp incoming/*.deb "$POOL"/
-
-          for arch in amd64 arm64; do
-            d="$ROOT/dists/stable/main/binary-$arch"
-            mkdir -p "$d"
-            # Packages index for this arch (paths relative to $ROOT).
-            ( cd "$ROOT" && apt-ftparchive --arch "$arch" packages pool/main ) > "$d/Packages"
-            gzip -kf "$d/Packages"
-          done
-
-          # Release file over the whole dists/stable tree.
-          cat > /tmp/apt-release.conf <<'EOF'
-          APT::FTPArchive::Release::Origin "Miista";
-          APT::FTPArchive::Release::Label "splitdns";
-          APT::FTPArchive::Release::Suite "stable";
-          APT::FTPArchive::Release::Codename "stable";
-          APT::FTPArchive::Release::Architectures "amd64 arm64";
-          APT::FTPArchive::Release::Components "main";
-          APT::FTPArchive::Release::Description "splitdns apt repository";
+          mkdir -p site/conf
+          cat > site/conf/distributions <<'EOF'
+          Origin: apt.guldmund.dk
+          Label: guldmund
+          Codename: stable
+          Architectures: amd64 arm64
+          Components: main
+          Description: apt repository for guldmund.dk tools
+          SignWith: yes
           EOF
-          apt-ftparchive -c /tmp/apt-release.conf release "$ROOT/dists/stable" > "$ROOT/dists/stable/Release"
+          reprepro --basedir site includedeb stable /tmp/debs/*.deb
+          gpg --armor --export > site/guldmund-archive-keyring.asc
+          rm -rf site/conf site/db
+          cat > site/setup.sh <<'EOF'
+          #!/bin/sh
+          # Adds the apt.guldmund.dk repository. Run as root:
+          #   curl -fsSL https://apt.guldmund.dk/setup.sh | sudo sh
+          set -eu
+          [ "$(id -u)" -eq 0 ] || { echo "run as root: curl -fsSL https://apt.guldmund.dk/setup.sh | sudo sh" >&2; exit 1; }
+          install -d /etc/apt/keyrings
+          curl -fsSL https://apt.guldmund.dk/guldmund-archive-keyring.asc -o /etc/apt/keyrings/guldmund-archive-keyring.asc
+          echo "deb [signed-by=/etc/apt/keyrings/guldmund-archive-keyring.asc] https://apt.guldmund.dk stable main" > /etc/apt/sources.list.d/guldmund.list
+          apt-get update -q
+          echo "guldmund repository added. Install with: sudo apt install docker-pin splitdns"
+          EOF
+          cat > site/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en"><head><meta charset="utf-8"><title>apt.guldmund.dk</title>
+          <style>body{font-family:system-ui,sans-serif;max-width:44rem;margin:3rem auto;padding:0 1rem;line-height:1.5}pre{background:#f4f4f4;padding:1rem;overflow-x:auto}</style>
+          </head><body>
+          <h1>apt.guldmund.dk</h1>
+          <p>Signed apt repository for guldmund.dk tools:</p>
+          <ul>
+          <li><a href="https://github.com/Miista/homebrew-docker-pin">docker-pin</a> — pin Docker Compose images to tag + digest</li>
+          <li><a href="https://github.com/Miista/homebrew-sd">splitdns</a> — split-horizon DNS + Caddy config from services.yaml</li>
+          </ul>
+          <h2>Install (Debian/Ubuntu)</h2>
+          <pre>curl -fsSL https://apt.guldmund.dk/setup.sh | sudo sh
+          sudo apt install docker-pin splitdns</pre>
+          <p>Or do the repo setup explicitly:</p>
+          <pre>sudo install -d /etc/apt/keyrings
+          curl -fsSL https://apt.guldmund.dk/guldmund-archive-keyring.asc \
+            | sudo tee /etc/apt/keyrings/guldmund-archive-keyring.asc > /dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/guldmund-archive-keyring.asc] https://apt.guldmund.dk stable main" \
+            | sudo tee /etc/apt/sources.list.d/guldmund.list
+          sudo apt update &amp;&amp; sudo apt install docker-pin splitdns</pre>
+          </body></html>
+          EOF
 
-          # Sign: detached Release.gpg + inline InRelease.
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" \
-            -abs -o "$ROOT/dists/stable/Release.gpg" "$ROOT/dists/stable/Release"
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" \
-            --clearsign -o "$ROOT/dists/stable/InRelease" "$ROOT/dists/stable/Release"
-
-          # Public key + install docs served alongside the repo.
-          cp splitdns-archive-keyring.asc "$ROOT/"
-          cp .github/apt/index.html "$ROOT/index.html"
-          cp .github/apt/setup.sh "$ROOT/setup.sh"
-
-      - name: Publish to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./public
-          publish_branch: gh-pages
-          force_orphan: true
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler pages project create apt-guldmund --production-branch=main 2>/dev/null || true
+          npx --yes wrangler pages deploy site --project-name=apt-guldmund --branch=main --commit-dirty=true
