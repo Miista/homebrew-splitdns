@@ -1,1 +1,5 @@
 /sd
+
+# Never commit built binaries — use goreleaser / deploy.sh / apt.
+sd-linux-amd64
+sd-linux-arm64
