@@ -20,14 +20,17 @@ import (
 //go:embed measure.sh
 var measureScript string
 
-// cmdMeasure times the HTTPS request breakdown for a service via the embedded
-// measure.sh.
+// cmdMeasure times the HTTPS request breakdown for a service, fqdn, or any
+// URL via the embedded measure.sh.
 //
-//	splitdns measure <service|fqdn>              measure the current path (full breakdown, incl. DNS)
+//	splitdns measure <service|fqdn|url>          measure the current path (full breakdown, incl. DNS)
 //	splitdns measure --compare <service|fqdn>    A/B split-horizon vs public (dns-host only)
 //
 // Plain measure resolves naturally — on the LAN that is the split-horizon
-// record — and includes the real DNS lookup time. Read-only.
+// record — and includes the real DNS lookup time. Read-only. A full URL
+// (http:// or https://) or a hostname not in services.yaml is measured as-is,
+// with no config required. --compare needs a configured service, because the
+// split-horizon leg's IP comes from services.yaml.
 //
 // --compare measures both the internal and public paths by pinning each with
 // curl --resolve (split IP from config, public IP via DoH), so it is fully
@@ -44,20 +47,51 @@ func cmdMeasure(cfgPath string, args []string) int {
 	}
 	rest := fs.Args()
 	if len(rest) < 1 {
-		errf("Missing the <service> or <fqdn> to measure.")
-		hint("Usage: splitdns measure [--compare] <service|fqdn>")
+		errf("Missing the <service>, <fqdn>, or <url> to measure.")
+		hint("Usage: splitdns measure [--compare] <service|fqdn|url>")
 		return 2
 	}
+	target := rest[0]
 
-	cfg, code := loadExisting(cfgPath, "measure")
-	if cfg == nil {
-		return code
+	// A full URL is measured as-is — no config involved.
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		if *compare {
+			errf("--compare needs a configured service: the split-horizon leg's IP comes from services.yaml.")
+			hint("Run 'splitdns measure %s' for a plain measurement.", target)
+			return 2
+		}
+		if err := runMeasureScript(target, ""); err != nil {
+			errf("%v", err)
+			return 1
+		}
+		return 0
 	}
 
-	name, svc, ok := resolveService(cfg, rest[0])
-	if !ok {
-		errf("No service named %q and no service with fqdn %q in services.yaml.", rest[0], rest[0])
-		return 1
+	// Resolve against services.yaml if present; otherwise fall through to
+	// treating the target as a bare hostname.
+	var cfg *config.Config
+	name, svc := "", config.Service{}
+	resolved := false
+	if c, err := config.Load(cfgPath); err == nil && c.Exists {
+		cfg = c
+		name, svc, resolved = resolveService(cfg, target)
+	}
+	if !resolved {
+		if !strings.Contains(target, ".") {
+			errf("No service named %q in services.yaml, and it does not look like a hostname or URL.", target)
+			hint("Usage: splitdns measure [--compare] <service|fqdn|url>")
+			return 1
+		}
+		if *compare {
+			errf("--compare needs a configured service: the split-horizon leg's IP comes from services.yaml.")
+			hint("Run 'splitdns measure %s' for a plain measurement.", target)
+			return 2
+		}
+		if err := runMeasureScript("https://"+target+"/", ""); err != nil {
+			errf("%v", err)
+			return 1
+		}
+		return 0
 	}
 	if svc.Disabled {
 		errf("Service %q is disabled — enable it before measuring.", name)
