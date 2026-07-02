@@ -35,7 +35,13 @@ the `homebrew-` prefix.)
 
 ### Debian / Ubuntu (apt)
 
-One-time repo setup:
+```sh
+curl -fsSL https://miista.github.io/homebrew-sd/setup.sh | sudo sh
+sudo apt install sd
+```
+
+Or, if you'd rather not pipe scripts into a root shell, do the one-time repo
+setup explicitly:
 
 ```sh
 sudo install -d /etc/apt/keyrings

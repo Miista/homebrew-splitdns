@@ -107,6 +107,7 @@ jobs:
           # Public key + install docs served alongside the repo.
           cp sd-archive-keyring.asc "$ROOT/"
           cp .github/apt/index.html "$ROOT/index.html"
+          cp .github/apt/setup.sh "$ROOT/setup.sh"
 
       - name: Publish to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
