@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-URL="${1:-https://happier.example.com}"
+URL="${1:?usage: measure.sh <url> [pin-ip]}"
 # Optional: $2 = IP to pin via --resolve (A/B legs). When set, curl skips DNS,
 # so the dns metric is meaningless and is omitted from the output.
 PIN="${2:-}"

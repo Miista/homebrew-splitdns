@@ -1,5 +1,11 @@
 /sd
+/shd
+/mirage
+/splitdns
 
 # Never commit built binaries — use goreleaser / deploy.sh / apt.
-sd-linux-amd64
-sd-linux-arm64
+*-linux-amd64
+*-linux-arm64
+
+# Local integration fixture (real deployment layout) — never commit.
+/testrepo/
