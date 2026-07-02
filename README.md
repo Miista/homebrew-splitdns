@@ -33,6 +33,23 @@ brew install sd
 (The tap repo is [`Miista/homebrew-sd`](https://github.com/Miista/homebrew-sd); Homebrew strips
 the `homebrew-` prefix.)
 
+### Debian / Ubuntu (apt)
+
+One-time repo setup:
+
+```sh
+sudo install -d /etc/apt/keyrings
+curl -fsSL https://miista.github.io/homebrew-sd/sd-archive-keyring.asc \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/sd-archive-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/sd-archive-keyring.gpg] https://miista.github.io/homebrew-sd stable main" \
+  | sudo tee /etc/apt/sources.list.d/sd.list
+sudo apt update && sudo apt install sd
+```
+
+After that, updates arrive via regular `apt upgrade`. The apt repo serves only
+the latest version; older `.deb`s are on the
+[releases page](https://github.com/Miista/homebrew-sd/releases).
+
 ### From source
 
 Requires Go 1.26+.
