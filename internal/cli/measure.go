@@ -61,7 +61,17 @@ func cmdMeasure(cfgPath string, args []string) int {
 			hint("Usage: splitdns measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>")
 			return 2
 		}
+		// flag.Parse stops at the first positional, so `--compare familyscreen
+		// -n 20` leaves the target AND the trailing flags in fs.Args(). Take
+		// the target, then re-parse the remainder so those flags count too.
 		target = fs.Arg(0)
+		if err := fs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		if fs.NArg() > 0 {
+			errf("Unexpected argument %q — measure takes one target.", fs.Arg(0))
+			return 2
+		}
 	}
 	if *runs < 1 {
 		errf("--runs must be at least 1 (got %d).", *runs)
