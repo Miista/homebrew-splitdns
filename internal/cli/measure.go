@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"splitdns/internal/config"
@@ -43,6 +44,10 @@ func cmdMeasure(cfgPath string, args []string) int {
 	compare := fs.Bool("compare", false, "A/B split-horizon vs public via --resolve (dns-host only; read-only)")
 	fs.BoolVar(compare, "c", false, "alias for --compare")
 	fs.BoolVar(compare, "ab", false, "alias for --compare")
+	runs := fs.Int("runs", 5, "number of timed requests per leg")
+	fs.IntVar(runs, "n", 5, "alias for --runs")
+	warmup := fs.Int("warmup", 3, "untimed warm-up requests before measuring")
+	fs.IntVar(warmup, "w", 3, "alias for --warmup")
 	// Accept the target on either side of the flags — `measure mealie --compare`
 	// and `measure --compare mealie` both work (flag.Parse alone would silently
 	// drop a flag that follows the positional).
@@ -53,10 +58,18 @@ func cmdMeasure(cfgPath string, args []string) int {
 	if !ok {
 		if fs.NArg() < 1 {
 			errf("Missing the <service>, <fqdn>, or <url> to measure.")
-			hint("Usage: splitdns measure [--compare] <service|fqdn|url>")
+			hint("Usage: splitdns measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>")
 			return 2
 		}
 		target = fs.Arg(0)
+	}
+	if *runs < 1 {
+		errf("--runs must be at least 1 (got %d).", *runs)
+		return 2
+	}
+	if *warmup < 0 {
+		errf("--warmup cannot be negative (got %d).", *warmup)
+		return 2
 	}
 
 	// A full URL is measured as-is — no config involved.
@@ -66,7 +79,7 @@ func cmdMeasure(cfgPath string, args []string) int {
 			hint("Run 'splitdns measure %s' for a plain measurement.", target)
 			return 2
 		}
-		if err := runMeasureScript(target, ""); err != nil {
+		if err := runMeasureScript(target, "", *runs, *warmup); err != nil {
 			errf("%v", err)
 			return 1
 		}
@@ -93,7 +106,7 @@ func cmdMeasure(cfgPath string, args []string) int {
 			hint("Run 'splitdns measure %s' for a plain measurement.", target)
 			return 2
 		}
-		if err := runMeasureScript("https://"+target+"/", ""); err != nil {
+		if err := runMeasureScript("https://"+target+"/", "", *runs, *warmup); err != nil {
 			errf("%v", err)
 			return 1
 		}
@@ -106,7 +119,7 @@ func cmdMeasure(cfgPath string, args []string) int {
 	url := "https://" + svc.FQDN + "/"
 
 	if !*compare {
-		if err := runMeasureScript(url, ""); err != nil {
+		if err := runMeasureScript(url, "", *runs, *warmup); err != nil {
 			errf("%v", err)
 			return 1
 		}
@@ -133,12 +146,12 @@ func cmdMeasure(cfgPath string, args []string) int {
 	}
 
 	fmt.Printf("%s== A: split-horizon (%s) ==%s\n", boldOn, splitIP, boldOff)
-	if err := runMeasureScript(url, splitIP); err != nil {
+	if err := runMeasureScript(url, splitIP, *runs, *warmup); err != nil {
 		errf("split-horizon leg failed: %v", err)
 		return 1
 	}
 	fmt.Printf("\n%s== B: public (%s) ==%s\n", boldOn, publicIP, boldOff)
-	if err := runMeasureScript(url, publicIP); err != nil {
+	if err := runMeasureScript(url, publicIP, *runs, *warmup); err != nil {
 		errf("public leg failed: %v", err)
 		return 1
 	}
@@ -147,9 +160,10 @@ func cmdMeasure(cfgPath string, args []string) int {
 }
 
 // runMeasureScript runs the embedded measure.sh against url via `bash -s`,
-// passing an optional pin IP (empty = natural resolution). Output streams live.
-func runMeasureScript(url, pinIP string) error {
-	cmd := exec.Command("bash", "-s", url, pinIP)
+// passing an optional pin IP (empty = natural resolution) plus the run and
+// warm-up counts. Output streams live.
+func runMeasureScript(url, pinIP string, runs, warmup int) error {
+	cmd := exec.Command("bash", "-s", url, pinIP, strconv.Itoa(runs), strconv.Itoa(warmup))
 	cmd.Stdin = strings.NewReader(measureScript)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

@@ -5,7 +5,8 @@ URL="${1:?usage: measure.sh <url> [pin-ip]}"
 # Optional: $2 = IP to pin via --resolve (A/B legs). When set, curl skips DNS,
 # so the dns metric is meaningless and is omitted from the output.
 PIN="${2:-}"
-N=5
+N="${3:-5}"
+WARMUP="${4:-3}"
 
 HOST=$(echo "$URL" | sed 's|https://||;s|http://||' | cut -d/ -f1)
 
@@ -17,16 +18,20 @@ if [ -n "$PIN" ]; then
     CURL_ARGS+=(--resolve "$HOST:443:$PIN")
 fi
 
-echo "Measuring $URL ($N runs)..."
-echo "Warming up..."
+RUNS_WORD="runs"; [ "$N" -eq 1 ] && RUNS_WORD="run"
+echo "Measuring $URL ($N $RUNS_WORD)..."
 # Warm up AND capture the IP curl actually connected to (%{remote_ip}) — with a
-# pin this echoes $PIN, without one it is curl's natural resolution.
-RESOLVED=""
-for _ in 1 2 3; do
-    RESOLVED=$(curl "${CURL_ARGS[@]}" -o /dev/null -s -w '%{remote_ip}' "$URL") || true
-done
-[ -z "$RESOLVED" ] && RESOLVED="unknown"
-echo "Resolved: $HOST -> $RESOLVED"
+# pin this echoes $PIN, without one it is curl's natural resolution. With zero
+# warmup there is no request to capture from, so the resolved line is skipped.
+if [ "$WARMUP" -gt 0 ]; then
+    echo "Warming up ($WARMUP)..."
+    RESOLVED=""
+    for _ in $(seq 1 "$WARMUP"); do
+        RESOLVED=$(curl "${CURL_ARGS[@]}" -o /dev/null -s -w '%{remote_ip}' "$URL") || true
+    done
+    [ -z "$RESOLVED" ] && RESOLVED="unknown"
+    echo "Resolved: $HOST -> $RESOLVED"
+fi
 [ -n "$PIN" ] && echo "(DNS excluded: IP pinned via --resolve)"
 echo ""
 
