@@ -129,8 +129,8 @@ splitdns [-C <dir>] add    domain <name>
 splitdns [-C <dir>] remove domain <name>
 splitdns [-C <dir>] set    dns-host <name>
 
-splitdns [-C <dir>] list
-splitdns [-C <dir>] verify
+splitdns [-C <dir>] list   [--all]
+splitdns [-C <dir>] verify [--all] [<fqdn>]
 splitdns [-C <dir>] version
 
   -C <dir>   operate on <dir> instead of the default ~/docker
@@ -146,8 +146,8 @@ splitdns [-C <dir>] version
 | `add host` / `add domain` | Declare a host / domain. `add host <name> <ip>` (the name is its repo directory, which must already exist; the IP must be unique). `add domain <name>` — splitdns generates the domain's TLS snippet on sync. |
 | `remove host` / `remove domain` | **Refuses** while any service still references it (and lists the blockers). Idempotent otherwise. |
 | `set dns-host <name>` | Set the default resolver host (the one whose dnsmasq receives records). |
-| `list` | Show current hosts, domains, and services with per-service validity (✓/✗). Read-only; exits non-zero if any service is invalid. |
-| `verify` | Check **live** DNS resolution per service: pihole's own view (in-container `dig`) + the client view (`getent`), asserting A == host IP and AAAA == `::`. Run **on the resolver host** after a deploy (§13). Needs docker. |
+| `list` | Show current hosts, domains, and services. The services list defaults to those on **this** host (matched by local IP); `--all` shows every host. Read-only. |
+| `verify` | Check **live** DNS resolution per service: pihole's own view (in-container `dig`) + the client view (`getent`), asserting A == host IP and AAAA == `::`. Defaults to services this host can check (it is the resolver or the service host); `--all` includes the rest. Run **on each host** after a deploy (§13). Needs docker. |
 
 `sync` reports only what changed by default (`+` created, `~` updated, `-` deleted) plus a
 summary and the synced service names; pass `--verbose` to also see the unchanged-file count.

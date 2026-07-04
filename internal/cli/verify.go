@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"flag"
 	"fmt"
 	"net"
 	"os/exec"
@@ -27,11 +28,24 @@ const (
 // service. cmdVerify identifies which host it is running on by matching local
 // IPs against the hosts map, then runs the half it can. Run it on each host to
 // cover the whole chain.
+//
+// By default it checks only services this host can actually verify (it is the
+// resolver or the service host); services with nothing checkable here are
+// skipped silently. --all lists every service, noting the ones with nothing to
+// check.
 func cmdVerify(cfgPath string, args []string) int {
 	cfg, code := loadExisting(cfgPath, "verify")
 	if cfg == nil {
 		return code
 	}
+
+	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
+	all := fs.Bool("all", false, "check every service, including those with nothing to verify on this host")
+	fs.BoolVar(all, "a", false, "alias for --all")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	args = fs.Args()
 
 	// Which managed host are we on? (match a local IP against hosts[].ip)
 	self := localHost(cfg)
@@ -65,10 +79,21 @@ func cmdVerify(cfgPath string, args []string) int {
 		sort.Strings(services)
 	}
 
+	// An explicit <fqdn> always reports (even if nothing is checkable here, so
+	// the user isn't left wondering); the bulk list is filtered to what this
+	// host can check unless --all.
+	explicit := len(args) > 0
+
 	resolver := cfg.DNSHost()
 	v := &verifier{}
+	skipped := 0
 	for _, name := range services {
 		svc := cfg.Services[name]
+		checkable := self == resolver || self == svc.Host
+		if !checkable && !*all && !explicit {
+			skipped++
+			continue
+		}
 		hostIP := cfg.Hosts[svc.Host].IP
 		fmt.Printf("\n%s== %s · %s ==%s\n", boldOn, name, svc.FQDN, boldOff)
 
@@ -78,10 +103,14 @@ func cmdVerify(cfgPath string, args []string) int {
 		if self == svc.Host {
 			v.caddy(svc.FQDN, svc.Backend)
 		}
-		if self != resolver && self != svc.Host {
+		if !checkable {
 			fmt.Printf("  · this host is neither the resolver (%s) nor the service host (%s) for %s — nothing to check here\n",
 				resolver, svc.Host, name)
 		}
+	}
+	if skipped > 0 {
+		fmt.Printf("\n%d %s with nothing to check on %q hidden — use --all to show.\n",
+			skipped, plural(skipped, "service"), self)
 	}
 
 	fmt.Println()

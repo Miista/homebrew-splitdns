@@ -736,8 +736,8 @@ Building blocks (a service references a host and a domain):
 
 Other:
   splitdns apply                    Make config live on THIS host: restart pihole / validate+reload caddy. Run on each host. Refuses if the repo has drift.
-  splitdns list                     Show current hosts, domains, and services (with validity).
-  splitdns verify                   Check live DNS resolution per service (run on the resolver host; needs docker).
+  splitdns list [--all]             Show current hosts, domains, and services. Services default to THIS host; --all shows every host.
+  splitdns verify [--all] [<fqdn>]  Check live DNS/Caddy per service. Defaults to services this host can check; --all includes the rest. Run on each host; needs docker.
   splitdns measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>  Time the request breakdown (dns/connect/tls/ttfb) for a service or any URL. --compare A/Bs split-horizon vs public read-only (dns-host only, services only).
   splitdns doctor [--fix]           Audit the repo (gitignored files, Caddyfile imports, generated-file drift); --fix reconciles files and .gitignore.
   splitdns version

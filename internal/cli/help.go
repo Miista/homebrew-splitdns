@@ -73,15 +73,26 @@ Usage: splitdns remove domain <name>`},
 
 Usage: splitdns set dns-host <name>`},
 
-	{"list", `splitdns list — show hosts, domains, and services (with validity)
+	{"list", `splitdns list — show hosts, domains, and services
 
-Usage: splitdns list`},
+Usage: splitdns list [--all]
+
+By default the services list is filtered to those running on THIS host
+(matched by local IP).
+
+Flags:
+  -a, --all   Show services on every host, not just this one.`},
 
 	{"verify", `splitdns verify — check live DNS resolution per service
 
-Usage: splitdns verify
+Usage: splitdns verify [--all] [<fqdn>]
 
-Run on the resolver host; needs docker (queries pihole in-container).`},
+By default it checks only services this host can verify (it is the resolver
+or the service host); the rest are hidden. Pass a single <fqdn> to check just
+that service. Run on each host to cover the whole chain; needs docker.
+
+Flags:
+  -a, --all   Also list services with nothing to check on this host.`},
 
 	{"apply", `splitdns apply — make config live on THIS host
 
