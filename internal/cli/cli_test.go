@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -176,3 +177,98 @@ func TestRun_ListMissingConfig(t *testing.T) {
 		t.Errorf("list with no services.yaml should exit 1, got %d", code)
 	}
 }
+
+// End-to-end: set auth-snippet, opt a service in, and verify the generated
+// (auth) file, the site import, and that a non-auth service stays clean.
+func TestRun_AuthSnippetFlow(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "snip.caddy"),
+		[]byte("forward_auth https://auth.example.com {\n\turi /api/authz/forward-auth\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := Run([]string{"-C", dir, "set", "auth-snippet", "snip.caddy"}); code != 0 {
+		t.Fatalf("set auth-snippet should exit 0, got %d", code)
+	}
+	// The (auth) file is generated on every host with the source body.
+	for _, host := range []string{"resolver", "appbox"} {
+		b, err := os.ReadFile(filepath.Join(dir, host, "caddy/data/splitdns.auth.generated.caddy"))
+		if err != nil {
+			t.Fatalf("%s: auth snippet not generated: %v", host, err)
+		}
+		if !contains(string(b), "forward_auth https://auth.example.com") {
+			t.Errorf("%s: auth body missing: %s", host, b)
+		}
+	}
+
+	// A service opting in imports auth; one that doesn't, doesn't.
+	Run([]string{"-C", dir, "add", "service", "gatus", "--fqdn", "status.example.com", "--host", "appbox", "--backend", "gatus:8080", "--auth"})
+	Run([]string{"-C", dir, "add", "service", "open", "--fqdn", "open.example.com", "--host", "appbox", "--backend", "open:3000"})
+
+	gatus, _ := os.ReadFile(filepath.Join(dir, "appbox", "caddy/data/sites/gatus.caddy"))
+	if !contains(string(gatus), "\timport auth\n") {
+		t.Errorf("gatus should import auth: %s", gatus)
+	}
+	open, _ := os.ReadFile(filepath.Join(dir, "appbox", "caddy/data/sites/open.caddy"))
+	if contains(string(open), "import auth") {
+		t.Errorf("open should NOT import auth: %s", open)
+	}
+}
+
+// Clearing the auth-snippet resets the generated file to the empty stub.
+func TestRun_SetAuthSnippetClear(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth x { }\n"), 0o644)
+	Run([]string{"-C", dir, "set", "auth-snippet", "snip.caddy"})
+
+	if code := Run([]string{"-C", dir, "set", "auth-snippet", "-"}); code != 0 {
+		t.Fatalf("clear should exit 0, got %d", code)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "resolver", "caddy/data/splitdns.auth.generated.caddy"))
+	if contains(string(b), "forward_auth") {
+		t.Errorf("cleared snippet should be empty stub, got: %s", b)
+	}
+	if !contains(string(b), "(auth) {\n}") {
+		t.Errorf("expected empty (auth) stub, got: %s", b)
+	}
+}
+
+// A nonexistent auth-snippet path is rejected at set time (before persisting).
+func TestRun_SetAuthSnippetRejectsMissing(t *testing.T) {
+	dir := t.TempDir()
+	seed(t, dir)
+	if code := Run([]string{"-C", dir, "set", "auth-snippet", "nope.caddy"}); code != 1 {
+		t.Errorf("missing source should exit 1, got %d", code)
+	}
+	// Nothing should have been persisted.
+	cfg, _ := os.ReadFile(filepath.Join(dir, configName))
+	if contains(string(cfg), "auth_snippet") {
+		t.Errorf("rejected path must not persist: %s", cfg)
+	}
+}
+
+// doctor flags source-vs-generated drift when the snippet source changes
+// without a re-sync.
+func TestRun_DoctorDetectsAuthDrift(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth v1 { }\n"), 0o644)
+	Run([]string{"-C", dir, "set", "auth-snippet", "snip.caddy"})
+
+	// Clean right after sync.
+	if code := Run([]string{"-C", dir, "doctor"}); code != 0 {
+		t.Fatalf("doctor should be clean after sync, got %d", code)
+	}
+	// Edit source WITHOUT syncing → drift.
+	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth v2 { }\n"), 0o644)
+	if code := Run([]string{"-C", dir, "doctor"}); code == 0 {
+		t.Errorf("doctor should detect drift after source edit, got exit 0")
+	}
+}
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }

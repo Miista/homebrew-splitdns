@@ -151,3 +151,52 @@ func write(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadAuthSnippet_Unset(t *testing.T) {
+	c := &Config{AuthSnippetBody: "stale"}
+	if err := c.LoadAuthSnippet(t.TempDir()); err != nil {
+		t.Fatalf("unset should not error: %v", err)
+	}
+	if c.AuthSnippetBody != "" {
+		t.Errorf("unset auth_snippet should clear body, got %q", c.AuthSnippetBody)
+	}
+}
+
+func TestLoadAuthSnippet_RelativeAndAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "snip.caddy"), "forward_auth x { }")
+
+	// relative path is resolved against repoRoot
+	c := &Config{Defaults: Defaults{AuthSnippet: "snip.caddy"}}
+	if err := c.LoadAuthSnippet(dir); err != nil {
+		t.Fatalf("relative: %v", err)
+	}
+	if c.AuthSnippetBody != "forward_auth x { }" {
+		t.Errorf("relative body wrong: %q", c.AuthSnippetBody)
+	}
+
+	// absolute path is used as-is
+	c2 := &Config{Defaults: Defaults{AuthSnippet: filepath.Join(dir, "snip.caddy")}}
+	if err := c2.LoadAuthSnippet("/nonexistent-root"); err != nil {
+		t.Fatalf("absolute: %v", err)
+	}
+	if c2.AuthSnippetBody != "forward_auth x { }" {
+		t.Errorf("absolute body wrong: %q", c2.AuthSnippetBody)
+	}
+}
+
+// A missing source must return an error WITHOUT clearing a previously-loaded
+// body — the keep-last-good invariant that stops a typo disabling auth.
+func TestLoadAuthSnippet_MissingKeepsBody(t *testing.T) {
+	c := &Config{
+		Defaults:        Defaults{AuthSnippet: "gone.caddy"},
+		AuthSnippetBody: "last-good-body",
+	}
+	err := c.LoadAuthSnippet(t.TempDir())
+	if err == nil {
+		t.Fatal("missing source should error")
+	}
+	if c.AuthSnippetBody != "last-good-body" {
+		t.Errorf("body must be preserved on error, got %q", c.AuthSnippetBody)
+	}
+}
