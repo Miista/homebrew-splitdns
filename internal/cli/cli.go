@@ -142,6 +142,8 @@ func Run(args []string) int {
 		return cmdApply(repoRoot, cfgPath, rest)
 	case "measure":
 		return cmdMeasure(cfgPath, rest)
+	case "completion":
+		return cmdCompletion(rest)
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -758,6 +760,7 @@ Other:
   splitdns measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>  Time the request breakdown (dns/connect/tls/ttfb) for a service or any URL. --compare A/Bs split-horizon vs public read-only (dns-host only, services only).
   splitdns doctor [--fix]           Audit the repo (gitignored files, Caddyfile imports, generated-file drift); --fix reconciles files and .gitignore.
   splitdns version
+  splitdns completion <bash|zsh>    Print a shell completion script to stdout (see 'splitdns help completion' to install).
   splitdns help [<command>]         Show this text, or a command's help (same as <command> --help).
 
 Global flags:

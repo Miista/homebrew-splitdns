@@ -25,6 +25,9 @@ jobs:
       - name: Generate man page
         run: go run ./tools/genman
 
+      - name: Generate shell completions
+        run: go run ./tools/gencompletions
+
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"

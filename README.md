@@ -68,6 +68,22 @@ The tool operates on `services.yaml` in **`~/docker`** by default; `-C <dir>`
 overrides it (git-style). There is no environment variable to configure. Check
 the version with `splitdns version`.
 
+### Shell completions
+
+The Homebrew formula and the Debian package install bash + zsh completions
+automatically. For a from-source build, generate them yourself:
+
+```sh
+# bash
+splitdns completion bash | sudo tee /usr/share/bash-completion/completions/splitdns > /dev/null
+# zsh (into a directory on your $fpath)
+splitdns completion zsh > "${fpath[1]}/_splitdns"
+```
+
+Completion covers the verbs, the `service`/`host`/`domain` nouns, and the known
+flags (existing service/host/domain names are not completed — that would require
+invoking the tool).
+
 ## Quick start
 
 Bootstrap a usable `services.yaml` entirely from the CLI — no hand-editing required:
@@ -196,6 +212,7 @@ splitdns [-C <dir>] set    auth-snippet <path>
 splitdns [-C <dir>] list   [--all]
 splitdns [-C <dir>] verify [--all] [<fqdn>]
 splitdns [-C <dir>] version
+splitdns            completion <bash|zsh>
 
   -C <dir>   operate on <dir> instead of the default ~/docker
 ```
@@ -211,7 +228,8 @@ splitdns [-C <dir>] version
 | `remove host` / `remove domain` | **Refuses** while any service still references it (and lists the blockers). Idempotent otherwise. |
 | `set dns-host <name>` | Set the default resolver host (the one whose dnsmasq receives records). |
 | `set auth-snippet <path>` | Set the forward-auth `(auth)` snippet source (a repo-relative Caddy file). Pass `-` to clear it (regenerates an empty no-op stub). See [Forward auth](#forward-auth-optional). |
-| `list` | Show current hosts, domains, and services. The services list defaults to those on **this** host (matched by local IP); `--all` shows every host. Read-only. |
+| `list` | Show current hosts, domains, and services as an aligned table. The `AUTH` column marks each service `✓` (behind forward auth) or `-`, and an `auth snippet:` line shows the configured `(auth)` source (or that none is set). The services list defaults to those on **this** host (matched by local IP); `--all` shows every host. Read-only. |
+| `completion <bash\|zsh>` | Print a static shell completion script to stdout (verbs, nouns, and flags). See [Shell completions](#shell-completions). |
 | `verify` | Check **live** DNS resolution per service: pihole's own view (in-container `dig`) + the client view (`getent`), asserting A == host IP and AAAA == `::`. Defaults to services this host can check (it is the resolver or the service host); `--all` includes the rest. Run **on each host** after a deploy (§13). Needs docker. |
 
 `sync` reports only what changed by default (`+` created, `~` updated, `-` deleted) plus a

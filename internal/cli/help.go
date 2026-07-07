@@ -139,6 +139,21 @@ the latter two need no services.yaml. Requires bash, curl, awk.`},
 	{"version", `splitdns version — print the version
 
 Usage: splitdns version   (aliases: --version, -v)`},
+
+	{"completion", `splitdns completion — print a shell completion script
+
+Usage: splitdns completion <bash|zsh>
+
+Writes a static completion script to stdout. It completes the top-level verbs,
+the nouns (service/host/domain), and the known flags — not existing service,
+host, or domain names (that would require invoking the tool).
+
+Install (bash):
+  splitdns completion bash | sudo tee /usr/share/bash-completion/completions/splitdns
+Install (zsh, into a dir on your $fpath):
+  splitdns completion zsh > "${fpath[1]}/_splitdns"
+
+The Debian package and Homebrew formula install these scripts for you.`},
 }
 
 // helpFor returns the help text for a topic like "measure" or "add service".
