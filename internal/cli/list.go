@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+
+	"splitdns/internal/config"
 )
 
 // cmdList prints the declared inventory — hosts, domains, services. It is plain
@@ -67,14 +69,14 @@ func cmdList(cfgPath string, args []string) int {
 	} else {
 		fmt.Printf("\n%s== Services (%d) ==%s\n", boldOn, len(svcNames), boldOff)
 	}
-	for _, name := range svcNames {
-		svc := cfg.Services[name]
-		if svc.Disabled {
-			fmt.Printf("  %-12s %s -> %s  (%s)  [disabled]\n", name, svc.FQDN, svc.Host, svc.Backend)
-		} else {
-			fmt.Printf("  %-12s %s -> %s  (%s)\n", name, svc.FQDN, svc.Host, svc.Backend)
-		}
+	// Surface the repo-global forward-auth snippet source (or that none is set),
+	// so the per-service AUTH column has visible context.
+	if cfg.Defaults.AuthSnippet != "" {
+		fmt.Printf("  auth snippet: %s\n", cfg.Defaults.AuthSnippet)
+	} else {
+		fmt.Println("  auth snippet: (none — set with 'splitdns set auth-snippet <path>')")
 	}
+	printServiceTable(cfg, svcNames)
 	if filtered && len(svcNames) < len(cfg.Services) {
 		fmt.Printf("  (%d on other hosts hidden — use --all to show)\n", len(cfg.Services)-len(svcNames))
 	}
@@ -82,6 +84,57 @@ func cmdList(cfgPath string, args []string) int {
 	repoRoot := filepath.Dir(cfgPath)
 	reportDrift(detectDrift(repoRoot, cfg, loadManifest(repoRoot, cfg)))
 	return 0
+}
+
+// printServiceTable renders the services as an aligned table with an AUTH
+// column. Column widths are computed from the data (including headers) so it
+// stays aligned regardless of name/fqdn lengths. Disabled services are marked
+// in a trailing note column. When nothing is selected, prints a placeholder.
+func printServiceTable(cfg *config.Config, svcNames []string) {
+	if len(svcNames) == 0 {
+		fmt.Println("  (none)")
+		return
+	}
+	type row struct{ name, fqdn, host, backend, auth, note string }
+	rows := make([]row, 0, len(svcNames))
+	anyAuth := false
+	for _, name := range svcNames {
+		svc := cfg.Services[name]
+		auth := "-"
+		if svc.Auth {
+			auth = "✓"
+			anyAuth = true
+		}
+		note := ""
+		if svc.Disabled {
+			note = "[disabled]"
+		}
+		rows = append(rows, row{name, svc.FQDN, svc.Host, svc.Backend, auth, note})
+	}
+
+	// Header + width computation. AUTH holds either "✓" or "-", both width 1.
+	hName, hFQDN, hHost, hBack, hAuth := "NAME", "FQDN", "HOST", "BACKEND", "AUTH"
+	wName, wFQDN, wHost, wBack := len(hName), len(hFQDN), len(hHost), len(hBack)
+	for _, r := range rows {
+		wName = max(wName, len(r.name))
+		wFQDN = max(wFQDN, len(r.fqdn))
+		wHost = max(wHost, len(r.host))
+		wBack = max(wBack, len(r.backend))
+	}
+
+	fmt.Printf("  %s%-*s  %-*s  %-*s  %-*s  %s%s\n",
+		boldOn, wName, hName, wFQDN, hFQDN, wHost, hHost, wBack, hBack, hAuth, boldOff)
+	for _, r := range rows {
+		line := fmt.Sprintf("  %-*s  %-*s  %-*s  %-*s  %s",
+			wName, r.name, wFQDN, r.fqdn, wHost, r.host, wBack, r.backend, r.auth)
+		if r.note != "" {
+			line += "  " + r.note
+		}
+		fmt.Println(line)
+	}
+	if anyAuth {
+		fmt.Println("  (✓ = behind forward auth; disable with 'splitdns update service <name> --auth=false')")
+	}
 }
 
 func sortedKeysOf[V any](m map[string]V) []string {
