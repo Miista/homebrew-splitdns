@@ -29,7 +29,7 @@ func TestDNSRecord_SuppressesAAAAWithUnspecified(t *testing.T) {
 }
 
 func TestCaddySite(t *testing.T) {
-	got := CaddySite("docs.example.com", "tls_example_com", "paperless:8000", false)
+	got := CaddySite("docs.example.com", "tls_example_com", "paperless:8000", false, false)
 	want := Header + "\n" +
 		"docs.example.com {\n" +
 		"\timport tls_example_com\n" +
@@ -41,7 +41,7 @@ func TestCaddySite(t *testing.T) {
 }
 
 func TestCaddySite_Auth(t *testing.T) {
-	got := CaddySite("docs.example.com", "tls_example_com", "paperless:8000", true)
+	got := CaddySite("docs.example.com", "tls_example_com", "paperless:8000", true, false)
 	want := Header + "\n" +
 		"docs.example.com {\n" +
 		"\timport tls_example_com\n" +
@@ -54,6 +54,23 @@ func TestCaddySite_Auth(t *testing.T) {
 	// The import must precede reverse_proxy so the auth check runs first.
 	if strings.Index(got, "import auth") > strings.Index(got, "reverse_proxy") {
 		t.Errorf("import auth must come before reverse_proxy: %q", got)
+	}
+}
+
+// The auth backend (the Authelia portal) preserves the inbound X-Forwarded-Host
+// via a header_up inside reverse_proxy, so post-login redirects target the
+// original service. It is never itself behind auth (auth=false here).
+func TestCaddySite_AuthBackend(t *testing.T) {
+	got := CaddySite("auth.example.com", "tls_example_com", "authelia:9091", false, true)
+	want := Header + "\n" +
+		"auth.example.com {\n" +
+		"\timport tls_example_com\n" +
+		"\treverse_proxy authelia:9091 {\n" +
+		"\t\theader_up X-Forwarded-Host {header.X-Forwarded-Host}\n" +
+		"\t}\n" +
+		"}\n"
+	if got != want {
+		t.Fatalf("CaddySite(authBackend) mismatch:\n got: %q\nwant: %q", got, want)
 	}
 }
 

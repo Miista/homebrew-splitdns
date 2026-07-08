@@ -257,10 +257,12 @@ func TestRun_DoctorDetectsAuthDrift(t *testing.T) {
 	dir := t.TempDir()
 	mkdirs(t, dir, "resolver", "appbox")
 	seed(t, dir)
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
 	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth v1 { }\n"), 0o644)
 	Run([]string{"-C", dir, "set", "auth-snippet", "snip.caddy"})
+	Run([]string{"-C", dir, "set", "auth-service", "authelia"})
 
-	// Clean right after sync.
+	// Clean right after sync (snippet + service both set → no config warning).
 	if code := Run([]string{"-C", dir, "doctor"}); code != 0 {
 		t.Fatalf("doctor should be clean after sync, got %d", code)
 	}
@@ -286,8 +288,10 @@ func TestRun_DoctorAuthSnippetCleanThenDrift(t *testing.T) {
 		[]byte("**/data/**\n"+strings.Join(unignoreRules(), "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
 	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth v1 { }\n"), 0o644)
 	Run([]string{"-C", dir, "set", "auth-snippet", "snip.caddy"})
+	Run([]string{"-C", dir, "set", "auth-service", "authelia"})
 
 	if code := Run([]string{"-C", dir, "doctor"}); code != 0 {
 		t.Fatalf("doctor should be clean after set auth-snippet, got %d", code)
@@ -296,6 +300,96 @@ func TestRun_DoctorAuthSnippetCleanThenDrift(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth v2 { }\n"), 0o644)
 	if code := Run([]string{"-C", dir, "doctor"}); code == 0 {
 		t.Errorf("doctor should flag drift after source edit, got exit 0")
+	}
+}
+
+// set auth-service names the auth backend; its block preserves X-Forwarded-Host.
+func TestRun_SetAuthServiceRendersHeaderPreserve(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
+	if code := Run([]string{"-C", dir, "set", "auth-service", "authelia"}); code != 0 {
+		t.Fatalf("set auth-service should exit 0, got %d", code)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "appbox", "caddy/data/sites/authelia.caddy"))
+	if !contains(string(b), "header_up X-Forwarded-Host {header.X-Forwarded-Host}") {
+		t.Errorf("auth_service block should preserve X-Forwarded-Host:\n%s", b)
+	}
+}
+
+// set auth-service refuses a service that doesn't exist and doesn't persist it.
+func TestRun_SetAuthServiceRejectsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	seed(t, dir)
+	if code := Run([]string{"-C", dir, "set", "auth-service", "ghost"}); code != 1 {
+		t.Errorf("unknown service should exit 1, got %d", code)
+	}
+	cfg, _ := os.ReadFile(filepath.Join(dir, configName))
+	if contains(string(cfg), "auth_service") {
+		t.Errorf("rejected auth_service must not persist: %s", cfg)
+	}
+}
+
+// doctor is non-zero (footgun) when auth_snippet is set but auth_service isn't.
+func TestRun_DoctorWarnsSnippetWithoutService(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth x { }\n"), 0o644)
+	Run([]string{"-C", dir, "set", "auth-snippet", "snip.caddy"})
+
+	out := captureStdout(t, func() { Run([]string{"-C", dir, "doctor"}) })
+	if !contains(out, "auth_service is not") {
+		t.Errorf("doctor should warn about missing auth_service:\n%s", out)
+	}
+	if code := Run([]string{"-C", dir, "doctor"}); code == 0 {
+		t.Errorf("doctor should exit non-zero for the snippet-without-service footgun")
+	}
+}
+
+// Clearing auth-service ('-') removes the header-preserve from the block.
+func TestRun_SetAuthServiceClear(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
+	Run([]string{"-C", dir, "set", "auth-service", "authelia"})
+
+	if code := Run([]string{"-C", dir, "set", "auth-service", "-"}); code != 0 {
+		t.Fatalf("clear should exit 0, got %d", code)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "appbox", "caddy/data/sites/authelia.caddy"))
+	if contains(string(b), "X-Forwarded-Host") {
+		t.Errorf("cleared auth_service block should not preserve X-Forwarded-Host:\n%s", b)
+	}
+}
+
+// authConfigWarnings covers the reverse (service without snippet) and the
+// unused-auth note, exercised through `list` output.
+func TestRun_AuthConfigWarnings(t *testing.T) {
+	// service set, snippet unset → "auth_service is set but auth_snippet is not".
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
+	Run([]string{"-C", dir, "set", "auth-service", "authelia"})
+	out := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
+	if !contains(out, "auth_snippet is not") {
+		t.Errorf("expected reverse warning (service without snippet):\n%s", out)
+	}
+
+	// both set but no service opted in → the unused-auth note.
+	dir2 := t.TempDir()
+	mkdirs(t, dir2, "resolver", "appbox")
+	seed(t, dir2)
+	os.WriteFile(filepath.Join(dir2, "snip.caddy"), []byte("forward_auth x { }\n"), 0o644)
+	Run([]string{"-C", dir2, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
+	Run([]string{"-C", dir2, "set", "auth-snippet", "snip.caddy"})
+	Run([]string{"-C", dir2, "set", "auth-service", "authelia"})
+	out2 := captureStdout(t, func() { Run([]string{"-C", dir2, "list", "--all"}) })
+	if !contains(out2, "no service uses it") {
+		t.Errorf("expected unused-auth note when nothing opted in:\n%s", out2)
 	}
 }
 

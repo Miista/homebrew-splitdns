@@ -24,3 +24,6 @@ id_*
 
 # macOS cruft.
 .DS_Store
+.claude/
+mikrotik_backup
+optiplex_deploy

@@ -133,6 +133,21 @@ func cmdDoctor(cfgPath string, args []string) int {
 	// --- generated-file drift check (missing / modified / orphaned) ---
 	problems += checkDrift(repoRoot, cfg, fix)
 
+	// --- forward-auth config advisories ---
+	// Report-but-proceed: these don't corrupt generated files, but the
+	// snippet-without-auth_service case reproduces the redirect-loop bug, so it
+	// counts as a doctor problem (non-zero exit). The rest are advisory.
+	if warns := authConfigWarnings(cfg); len(warns) > 0 {
+		for _, msg := range warns {
+			fmt.Printf("%s %s\n", warn, msg)
+		}
+		if cfg.Defaults.AuthSnippet != "" && cfg.Defaults.AuthService == "" {
+			problems++
+		}
+	} else if cfg.Defaults.AuthSnippet != "" {
+		fmt.Println(tick + " Forward-auth config is consistent.")
+	}
+
 	if problems > 0 {
 		return 1
 	}

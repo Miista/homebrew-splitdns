@@ -242,3 +242,46 @@ func cmdSetAuthSnippet(cfgPath string, args []string) int {
 	// The snippet content changed for every host, so regenerate all auth files.
 	return runSync(repoRoot, cfg, syncpkg.Complete)
 }
+
+// cmdSetAuthService names the service that is the forward-auth backend (the
+// Authelia portal). Its site block gains a header_up that preserves the inbound
+// X-Forwarded-Host, so post-login redirects target the original service rather
+// than looping back to the portal. Parallels set dns-host: names one repo-wide
+// role by service name; '-' clears it.
+func cmdSetAuthService(cfgPath string, args []string) int {
+	if len(args) < 1 {
+		errf("Missing the <name>.")
+		hint("Usage: splitdns set auth-service <name>   (use '-' to clear)")
+		return 2
+	}
+	name := args[0]
+
+	cfg, code := loadExisting(cfgPath, "set the auth-service in")
+	if cfg == nil {
+		return code
+	}
+	repoRoot := filepath.Dir(cfgPath)
+	if name == "-" || name == "" {
+		cfg.Defaults.AuthService = ""
+		if err := cfg.Save(); err != nil {
+			errf("%v", err)
+			return 1
+		}
+		fmt.Println("Cleared auth_service — the auth backend's site block no longer preserves X-Forwarded-Host.")
+		return runSync(repoRoot, cfg, syncpkg.Complete)
+	}
+	// The named service must exist, else its block can't be rendered specially
+	// (mirrors set dns-host refusing an unknown host).
+	if _, exists := cfg.Services[name]; !exists {
+		errf("Service %q does not exist — add it first with: splitdns add service %s ...", name, name)
+		return 1
+	}
+	cfg.Defaults.AuthService = name
+	if err := cfg.Save(); err != nil {
+		errf("%v", err)
+		return 1
+	}
+	fmt.Printf("Set auth_service to %q.\n", name)
+	// Its site block changes (gains the header_up), so regenerate.
+	return runSync(repoRoot, cfg, syncpkg.Complete)
+}

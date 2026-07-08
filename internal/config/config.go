@@ -56,6 +56,14 @@ type Defaults struct {
 	// snippet on every host. Empty means an empty (auth) {} stub is generated
 	// (no-op), so services that `import auth` remain valid but unprotected.
 	AuthSnippet string `yaml:"auth_snippet,omitempty"`
+	// AuthService names the service that IS the forward-auth backend (the
+	// Authelia portal). Its site block gets `header_up X-Forwarded-Host
+	// {header.X-Forwarded-Host}` so the original request host survives the
+	// hairpin through Caddy — without it, forward-auth reconstructs the auth
+	// domain as the target and post-login redirects loop back to the portal.
+	// Parallels dns_host: one repo-wide role, named by service, set via
+	// `splitdns set auth-service <name>`.
+	AuthService string `yaml:"auth_service,omitempty"`
 }
 
 // Service is one declared service entry. There is no per-service dns_host:

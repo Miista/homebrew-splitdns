@@ -122,8 +122,8 @@ func TestList_AuthSnippetHeader(t *testing.T) {
 	// Set.
 	dir := listSetup(t, "snip.caddy")
 	out := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
-	if !strings.Contains(out, "auth snippet: snip.caddy") {
-		t.Errorf("expected 'auth snippet: snip.caddy', got:\n%s", out)
+	if !strings.Contains(out, "auth snippet:  snip.caddy") {
+		t.Errorf("expected 'auth snippet:  snip.caddy', got:\n%s", out)
 	}
 
 	// Unset: no auth-snippet, and a single non-auth service.
@@ -135,7 +135,7 @@ func TestList_AuthSnippetHeader(t *testing.T) {
 		t.Fatalf("add plain service exit %d", code)
 	}
 	out2 := captureStdout(t, func() { Run([]string{"-C", dir2, "list", "--all"}) })
-	if !strings.Contains(out2, "auth snippet: (none") {
+	if !strings.Contains(out2, "auth snippet:  (none") {
 		t.Errorf("expected 'auth snippet: (none ...)' when unset, got:\n%s", out2)
 	}
 	// With no auth service, the disable hint must NOT appear.

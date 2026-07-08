@@ -98,11 +98,26 @@ func DNSRecord(fqdn, hostIP string) string {
 // snippet name (e.g. tls_example_com); backend is emitted verbatim as the
 // reverse_proxy upstream (design §4.2). When auth is true, the site imports the
 // (auth) forward-auth snippet before proxying — placed before reverse_proxy so
-// Caddy runs the auth check first and only proxies on success.
-func CaddySite(fqdn, tlsImport, backend string, auth bool) string {
+// Caddy runs the auth check first and only proxies on success. When authBackend
+// is true (this service is the forward-auth portal), the reverse_proxy also
+// preserves the inbound X-Forwarded-Host so post-login redirects target the
+// original service, not the portal.
+func CaddySite(fqdn, tlsImport, backend string, auth, authBackend bool) string {
 	authLine := ""
 	if auth {
 		authLine = fmt.Sprintf("\timport %s\n", AuthSnippetName)
+	}
+	// The forward-auth backend (the Authelia portal) must preserve the inbound
+	// X-Forwarded-Host through the reverse_proxy. When a protected service's
+	// auth check hits this backend, Caddy's outer hop already set
+	// X-Forwarded-Host to the *original* service host; a plain reverse_proxy
+	// would reset it to this block's host (the auth domain), making Authelia
+	// treat itself as the target and loop the post-login redirect. Preserving it
+	// is safe: the value is whatever the trusted outer Caddy hop computed, not
+	// anything a client can spoof.
+	if authBackend {
+		return fmt.Sprintf("%s\n%s {\n\timport %s\n%s\treverse_proxy %s {\n\t\theader_up X-Forwarded-Host {header.X-Forwarded-Host}\n\t}\n}\n",
+			Header, fqdn, tlsImport, authLine, backend)
 	}
 	return fmt.Sprintf("%s\n%s {\n\timport %s\n%s\treverse_proxy %s\n}\n",
 		Header, fqdn, tlsImport, authLine, backend)

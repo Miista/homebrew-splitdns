@@ -204,13 +204,11 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 	if !backendRe.MatchString(svc.Backend) {
 		return nil, fmt.Sprintf("backend %q is not name:port shape", svc.Backend)
 	}
-	// Loop guard: a service that IS the forward-auth backend must not also be
-	// protected by it, or every auth subrequest would recurse through the auth
-	// portal. We can't parse the opaque snippet body reliably, but if the
-	// service's own fqdn appears in it, it is (almost certainly) the portal —
-	// refuse auth on it rather than generate a redirect loop.
-	if svc.Auth && c.AuthSnippetBody != "" && strings.Contains(c.AuthSnippetBody, svc.FQDN) {
-		return nil, fmt.Sprintf("auth refused: %q is referenced by the forward-auth snippet (it is the auth backend) — protecting it would create a redirect loop", svc.FQDN)
+	// Loop guard: the service that IS the forward-auth backend (defaults.
+	// auth_service, the Authelia portal) must not also be protected by it, or
+	// every auth subrequest would recurse through the portal.
+	if svc.Auth && name == c.Defaults.AuthService {
+		return nil, fmt.Sprintf("auth refused: %q is the auth_service (the forward-auth backend) — protecting it would create a redirect loop", name)
 	}
 
 	dnsPath := filepath.Join(dnsM.ResolvedDir(dnsHostName), config.DefaultDnsmasqDir, name+".generated.conf")
@@ -218,7 +216,7 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 
 	return []File{
 		{Path: dnsPath, Content: render.DNSRecord(svc.FQDN, hostM.IP)},
-		{Path: caddyPath, Content: render.CaddySite(svc.FQDN, tlsImport, svc.Backend, svc.Auth)},
+		{Path: caddyPath, Content: render.CaddySite(svc.FQDN, tlsImport, svc.Backend, svc.Auth, name == c.Defaults.AuthService)},
 	}, ""
 }
 

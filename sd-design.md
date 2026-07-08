@@ -1,20 +1,31 @@
-# sd — Split-Horizon DNS (Manager) — Design Document
+# splitdns — Split-Horizon DNS (Manager) — Design Document
 
-A Go CLI that generates and reconciles split-horizon DNS records (Pi-hole/dnsmasq) and
-reverse-proxy site blocks (Caddy) for a homelab, from a single declarative source of
-truth committed to a git repository.
+A Go CLI (`splitdns`) that generates and reconciles split-horizon DNS records (Pi-hole/dnsmasq)
+and reverse-proxy site blocks (Caddy) for a homelab, from a single declarative source of truth
+committed to a git repository.
+
+> This document describes the current implementation. It was reconciled against the code
+> (`internal/{config,plan,render,sync,manifest,cli}`) — section references in code comments
+> (`design §N`) point back here. Historical note: the binary and CLI were formerly named `sd`;
+> both are now `splitdns`, and the on-disk manifest/config names changed accordingly (§5).
 
 ## 1. Context and constraints
 
 - The homelab is a **single git repository**, one directory per machine
-  (e.g. `resolver/`, `appbox/`).
-- Deployment is **`git pull && docker compose up -d`** per machine. This tool does **not**
-  deploy and does **not** reload services. It only writes files into the repo.
+  (e.g. `pi/`, `optiplex/`).
+- Deployment is **`git pull`** per machine, then a live-reload step. This tool does **not**
+  deploy or SSH anywhere — it only writes files into the local repo checkout. Making the
+  written config *live* is a separate, explicit step run on each host: `splitdns apply` (§6.3),
+  which restarts Pi-hole / validates + reloads Caddy. (This is a change from the original
+  design, which left reload to an external deploy wrapper; `apply` folds that in as a command
+  but still runs per-host and never SSHes.)
 - A service's artifacts fan out across **two machine directories**: its DNS record lives on
-  the resolver host (default the Pi), its Caddy site block lives on the host that runs the
+  the resolver host (`defaults.dns_host`), its Caddy site block lives on the host that runs the
   service. Therefore the source of truth must be **repo-level**, not per-machine.
-- DNS uses dnsmasq `address=` directives via Pi-hole v6 (`FTLCONF_misc_etc_dnsmasq_d: 'true'`
-  must be set so `/etc/dnsmasq.d/*.conf` is sourced).
+- DNS uses dnsmasq `local=` + `address=` directives via Pi-hole v6
+  (`FTLCONF_misc_etc_dnsmasq_d: 'true'` must be set so `/etc/dnsmasq.d/*.conf` is sourced).
+  `conf-dir` does **not** recurse into subdirectories — generated `.conf` files live directly
+  in `dnsmasq.d/`, with `.generated.` in the filename as the marker (§4.1).
 - Caddy serves wildcard certs pushed by an external acme.sh pipeline (every cert to every host).
   The tool never touches certs or ACME; it generates the per-domain `tls_<domain>` snippet (§4.3)
   and emits site blocks that `import` it.
@@ -22,14 +33,21 @@ truth committed to a git repository.
 ## 2. Core model
 
 - **The YAML file is the desired state and the sole source of truth.** It is committed to git.
-- The tool is **reconcile-and-report**, Terraform/`make` style: every `sync` makes the
-  generated files match the YAML as far as it validly can.
+  (The one exception: the forward-auth snippet body is read from an external file referenced by
+  `defaults.auth_snippet`, §4.5.)
+- The tool is **reconcile-and-report**, Terraform/`make` style: every reconcile re-derives all
+  output from the YAML as far as it validly can.
 - There is **no checksum / lock / adopt gate.** Because every run re-derives all output from
   the YAML, drift cannot accumulate, and git operations (merges, edits from another clone,
   cherry-picks) "just work" — the tool has no opinion about *how* the YAML reached its current
   valid state.
 - **Partial success is the norm.** Invalid entries are skipped and reported; valid entries are
   still generated. The only globally fatal condition is YAML that cannot be parsed at all.
+- **Reconcile is not a user command.** Unlike the original design (which exposed
+  `sync --incremental|--complete`), the reconcile engine is invoked automatically as the tail
+  of every mutation. The mode is chosen by the mutation's shape, not by a user flag (§6.1). The
+  user-facing surface for "make it match / make it live" is `doctor --fix` (repo) and `apply`
+  (running daemons).
 
 ## 3. Source of truth: `services.yaml` (repo root)
 
@@ -37,71 +55,86 @@ The tool **owns** this file and rewrites it wholesale on mutation. Ordering is n
 and is unimportant. The file is machine-owned; human comments are not preserved (document
 intent in a README, not in the YAML).
 
+The in-memory `Config` uses a `map[string]Domain` for domains, but the on-disk (wire) form
+serializes `domains` as a **plain sorted list of strings** — there is no per-domain data to
+carry, so a list is cleaner than a map of empty objects.
+
 ```yaml
 hosts:
-  resolver: { ip: 192.0.2.1 }   # a host's name is its repo directory
-  appbox:   { ip: 192.0.2.2 }
+  pi:       { ip: 192.0.2.1 }   # a host's name is its repo directory; `dir:` overrides only if they differ
+  optiplex: { ip: 192.0.2.2 }
 
 domains:
-  example.com: {}   # TLS snippet name + cert path are derived from the domain
-  example.net: {}
+  - example.com   # TLS snippet name + cert path are derived from the domain
+  - example.net
 
 defaults:
-  dns_host: resolver          # the single resolver host (set via: sd set dns-host)
-  auth_snippet: auth-snippet.caddy   # optional; forward-auth block copied into (auth) — see §4.5
+  dns_host: pi                        # the single resolver host (set via: splitdns set dns-host)
+  auth_snippet: authelia/forward-auth.caddy  # optional; forward-auth block copied into (auth) — §4.5
+  auth_service: authelia              # optional; the service that IS the auth backend — §4.5
 
 services:
   docs:
     fqdn: docs.example.com
-    host: appbox        # machine that runs the service; Caddy site block goes in its dir
+    host: optiplex                    # machine that runs the service; Caddy site block goes in its dir
     backend: paperless:8000
-    auth: true          # optional; import the (auth) forward-auth snippet (§4.5) in this site block
+    # disabled: true                  # optional; see §6.1 (enable/disable)
+    # auth: true                      # optional; import the (auth) forward-auth snippet — §4.5
 ```
 
 Notes:
-- `host_ip` for the A record is **looked up** from `hosts[<host>].ip`. The IP is declared
-  once per machine and never repeated in service entries.
-- `dns_host` is a **single repo-wide resolver** (`defaults.dns_host`, set via `sd set dns-host`).
-  Every service's DNS record is routed through it; there is **no per-service override** — all
-  clients go through one resolver (pihole). **Do not hardcode which host that is**: it is
-  configurable and may be repointed to a different box, so always read `defaults.dns_host` rather
-  than assuming the Pi.
-- A service's domain is chosen by matching its `fqdn`'s registrable domain suffix against the
-  `domains` map; the TLS snippet name (`tls_<domain with dots→underscores>`) and cert path are
-  derived from that domain — no per-domain config.
+- The A record's IP is **looked up** from `hosts[<host>].ip`. The IP is declared once per
+  machine and never repeated in service entries.
+- A host's repo directory defaults to its name (`hosts` key). A `dir:` field exists for the
+  rare case where directory ≠ name, but the convention (and the whole fleet today) is dir == name.
+- `dns_host` is a **single repo-wide resolver** (`defaults.dns_host`, set via
+  `splitdns set dns-host`). Every service's DNS record is routed through it; there is **no
+  per-service override**. **Do not hardcode which host that is** — always read `defaults.dns_host`.
+- A service's domain is chosen by matching its `fqdn`'s longest matching registrable domain
+  suffix against the `domains` list; the TLS snippet name (`tls_<domain with dots→underscores>`)
+  and cert path are derived from that domain — no per-domain config.
 
-## 4. Generated output (per service)
+## 4. Generated output
 
-The tool owns dedicated subdirectories. Filenames are `<service>.<ext>`, human-readable.
+The tool owns dedicated subdirectories. Filenames are human-readable and carry a `generated`
+marker. Every generated file starts with the header
+`# GENERATED by splitdns — do not edit. Source: services.yaml`.
 
-### 4.1 DNS record
-Path: `<dns_host>/pihole/data/dnsmasq.d/generated/<service>.conf`
-*(`<dns_host>` is the resolver host's name, which is its repo directory.)*
+### 4.1 DNS record (per service)
+Path: `<dns_host>/pihole/data/dnsmasq.d/<service>.generated.conf`
+*(directly in `dnsmasq.d/` — pihole's `conf-dir` does not recurse, so no `generated/` subdir;
+the marker is in the filename. `<dns_host>` is the resolver host's repo directory.)*
 
-Content:
+Content (three directives):
 ```
 # GENERATED by splitdns — do not edit. Source: services.yaml
+local=/docs.example.com/
 address=/docs.example.com/192.0.2.2
 address=/docs.example.com/::
 ```
 
-- The A record points at `hosts[host].ip` (the machine that runs the service), **not**
-  the dns_host.
-- The `address=/<fqdn>/::` line is **always emitted** to suppress the public AAAA record.
-  This is structural, not optional: without it, IPv6-preferring clients resolve the public
-  Cloudflare AAAA and bypass split-horizon. `::` (unspecified) is correct here; `::1`
-  (loopback) is a bug — never emit `::1`.
+- `local=/<fqdn>/` makes dnsmasq **authoritative for the whole name**, so query types with no
+  local record — notably the **HTTPS/SVCB (type 65)** record — return NODATA instead of being
+  forwarded upstream and cached. This is required, not cosmetic: `address=` alone covers only
+  A/AAAA; without `local=`, dnsmasq forwards the type-65 query to Cloudflare, and SVCB-aware
+  clients (Safari, Chrome/Edge) follow its public endpoint hint, bypassing split-horizon.
+  (This directive is **new since the original design**, which emitted only the two `address=`
+  lines and thus leaked the SVCB record.)
+- The A record points at `hosts[host].ip` (the machine that RUNS the service), **not** the
+  dns_host.
+- `address=/<fqdn>/::` is **always emitted** to suppress the public AAAA. `::` (unspecified) is
+  correct; `::1` (loopback) is a bug — never emit `::1`.
 
-### 4.2 Caddy site block
+### 4.2 Caddy site block (per service)
 Path: `<host>/caddy/data/sites/<service>.caddy`
-*(`<host>` is the service host's name, which is its repo directory.)*
+*(`<host>` is the service host's repo directory.)*
 
-Content:
+Content (plain service):
 ```
 # GENERATED by splitdns — do not edit. Source: services.yaml
 docs.example.com {
-        import tls_example_com
-        reverse_proxy paperless:8000
+	import tls_example_com
+	reverse_proxy paperless:8000
 }
 ```
 
@@ -109,9 +142,29 @@ docs.example.com {
   (`tls_` + domain with dots→underscores, e.g. `tls_example_com`).
 - `backend` is emitted verbatim as the `reverse_proxy` upstream. It is expected to be a Docker
   network reference (`container:port`) resolvable on the serving machine's Docker network — not
-  a LAN IP. The tool does not validate reachability, only shape (`name:port`).
+  a LAN IP. The tool validates only shape (`^[A-Za-z0-9._-]+:[0-9]+$`), not reachability.
 - When the service sets `auth: true` (§4.5), an `import auth` line is emitted **before**
-  `reverse_proxy`, so Caddy runs the forward-auth check first and only proxies on success.
+  `reverse_proxy`, so Caddy runs the forward-auth check first and only proxies on success:
+  ```
+  docs.example.com {
+  	import tls_example_com
+  	import auth
+  	reverse_proxy paperless:8000
+  }
+  ```
+- When the service **is** the auth backend (`name == defaults.auth_service`, §4.5), its
+  `reverse_proxy` additionally preserves the inbound `X-Forwarded-Host`:
+  ```
+  auth.example.com {
+  	import tls_example_com
+  	reverse_proxy authelia:9091 {
+  		header_up X-Forwarded-Host {header.X-Forwarded-Host}
+  	}
+  }
+  ```
+  Without this, the auth backend would reset `X-Forwarded-Host` to its own (auth) domain, so
+  Authelia treats itself as the post-login target and loops the redirect. The value is whatever
+  the trusted outer Caddy hop computed, so preserving it is not a spoofing vector.
 
 ### 4.3 TLS snippet (per host × domain)
 Path: `<host>/caddy/data/tls/tls_<domain>.caddy`
@@ -127,32 +180,44 @@ Content:
 The tool generates one snippet **per domain on every host** (the acme pipeline pushes every
 cert to every host, so the snippet is valid everywhere). Cert paths follow the fixed convention
 `/etc/caddy/certs/<domain>/{fullchain.cer,privkey.key}`. These files are owned/tracked under a
-synthetic manifest key per domain and GC'd by `sync --complete` when a domain or host is removed.
+synthetic manifest key per domain (`@domain:<name>`, §5) and GC'd when a domain or host is
+removed.
 
 ### 4.4 Caddyfile integration
+Path: `<host>/caddy/data/splitdns.generated.caddy` (per host)
 
-Each host's main `Caddyfile` must import `splitdns.generated.caddy`, which in turn imports
-`tls/*.caddy` and `sites/*.caddy`. The tool never edits the main `Caddyfile` directly.
+Each host's main `Caddyfile` must import `splitdns.generated.caddy`, whose content is fixed and
+imports three things **in order**:
+```
+# GENERATED by splitdns — do not edit. Source: services.yaml
+import splitdns.auth.generated.caddy
+import tls/*.caddy
+import sites/*.caddy
+```
+Order matters: the `(auth)` snippet (§4.5) and the `tls_*` snippets must be **defined before**
+`sites/*.caddy` (the blocks that import them). `splitdns.auth.generated.caddy` sits directly in
+`caddy/data/` (a sibling of the import file), so it is *not* swept up by the `sites/`/`tls/`
+globs and must be imported by name — which is why it is listed explicitly and first.
 
-`splitdns sync` writes `splitdns.generated.caddy` and tracks it in the manifest under the synthetic key
-`@caddy-import`. Its content is fixed (two glob imports) and never changes after the first write,
-but sync ensures it exists on every run. It is not counted as a service in sync output.
+The tool never edits the main `Caddyfile`; it writes this import file and tracks it under the
+synthetic manifest key `@caddy-import`. Its content never changes after first write, but every
+reconcile ensures it exists on every host. It is not counted as a service in output.
 
-`sd doctor` checks that each host's `Caddyfile` contains the import line.
-`sd doctor --fix` appends it if missing.
+`splitdns doctor` checks that each host's `Caddyfile` contains the import line;
+`splitdns doctor --fix` appends it if missing (and migrates the pre-rename `import
+sd.generated.caddy`) (§6.4).
 
-`splitdns.generated.caddy` imports `splitdns.auth.generated.caddy` (§4.5) **first**, before the
-`tls/*.caddy` and `sites/*.caddy` globs, so the `(auth)` snippet is defined before any site block
-imports it.
+### 4.5 Forward-auth (`(auth)` snippet + auth backend)
 
-### 4.5 Forward-auth snippet (per host, always present)
-Path: `<host>/caddy/data/splitdns.auth.generated.caddy`
+Optional forward auth is a **repo-global** concern with **per-service opt-in**, split into two
+generated pieces plus one config role:
 
-Optional forward auth is a **repo-global** concern with **per-service opt-in**, split so the shared
-part needs no per-host substitution:
+**The `(auth)` snippet** — Path: `<host>/caddy/data/splitdns.auth.generated.caddy` (per host,
+**always generated**, synthetic manifest key `@auth-snippet`).
 
-- `defaults.auth_snippet` (§3) is a repo-relative path to a Caddy file holding a `forward_auth`
-  block. Its contents are copied verbatim into the body of a snippet named `(auth)`, generated on
+- `defaults.auth_snippet` is a repo-relative path to a Caddy file holding a `forward_auth`
+  block. Its contents are read (`config.LoadAuthSnippet`) and copied **verbatim** (each line
+  indented one tab) into the body of a snippet named `(auth)`, generated byte-identically on
   **every host**:
   ```
   # GENERATED by splitdns — do not edit. Source: services.yaml
@@ -163,206 +228,358 @@ part needs no per-host substitution:
   	}
   }
   ```
-  The `forward_auth` target is a **public FQDN** resolved by the split-horizon DNS this tool already
-  generates, so the byte-identical snippet is correct on every host — no per-host substitution, no
-  container-name vs LAN-IP branching. (The snippet body is opaque to splitdns; it is copied, not parsed.)
-- The file is **always generated**. With no `auth_snippet` set, an empty `(auth) {}` no-op stub is
-  written. Combined with per-service `auth: true` emitting `import auth` (§4.2), this means turning
-  auth on/off is a **single-file content change** — site blocks never move, and the snippet is a
-  normal tracked file (synthetic manifest key `@auth-snippet`), so drift detection compares its
-  on-disk content against the live source for free.
-- **Keep-last-good on missing source**: if `auth_snippet` is set but the file is unreadable at sync
-  time, splitdns reports the error and exits non-zero but leaves the existing generated file in
-  place (it does **not** reset to the empty stub, nor GC it). A path typo must never silently drop
-  auth on every protected service. This is the one place a generated file's content derives from an
-  external source rather than purely from `services.yaml`.
-- **Loop guard**: a service whose fqdn appears in the snippet body (it is the auth backend itself)
-  is refused `auth: true` and skipped (§7), preventing a forward-auth redirect loop through the
-  portal.
+  The `forward_auth` target is a **public FQDN** resolved by the split-horizon DNS this tool
+  already generates, so the same snippet is correct on every host — no per-host substitution.
+  The body is **opaque** to splitdns; it is copied, not parsed.
+- The snippet name is the concept — `"auth"`, never a provider name — so swapping the backing
+  provider (Authelia → something else) is a one-file content change, not a rename everywhere.
+- The file is **always generated**. With no `auth_snippet` set, an empty `(auth) {}` no-op stub
+  is written. Combined with per-service `auth: true` emitting `import auth`, turning auth on/off
+  is a **single-file content change** — site blocks never move.
+- **Keep-last-good on unreadable source**: if `auth_snippet` is set but the file can't be read
+  at reconcile time, `LoadAuthSnippet` returns the error **without** clearing the in-memory body,
+  and `plan.PinAuthSnippetToDisk` rewrites the planned `(auth)` content to whatever is already on
+  disk. The command reports the error and exits non-zero (report-but-proceed, §8) but the
+  existing generated snippet stays in place — it is **not** reset to the empty stub. A path typo
+  must never silently disable auth fleet-wide. This is the one place a generated file's content
+  derives from an external source rather than purely from `services.yaml`.
 
-`sd doctor` reports the auth file like any other generated file: if the `auth_snippet` source is
-edited without a re-sync, the generated `(auth)` file is flagged as modified (drift).
+**The auth backend** — `defaults.auth_service` names the single service that *is* the
+forward-auth portal (parallels `dns_host`: one repo-wide role, named by service, set via
+`splitdns set auth-service <name>`, `-` clears). That service's site block gets the
+`X-Forwarded-Host` preservation described in §4.2.
+
+**Loop guard** (§7): a service with `auth: true` **and** `name == defaults.auth_service` is
+refused and skipped — protecting the portal with itself would recurse every auth subrequest.
+(The guard keys on the service name, not on parsing the opaque snippet body.)
+
+**Half-configured warnings** (`authConfigWarnings`, non-fatal, printed after a reconcile):
+`auth_snippet` set but no `auth_service` (redirect-loop risk); `auth_service` set but no
+`auth_snippet` (the `(auth)` block is a no-op stub); `auth_service` names a non-existent service;
+or fully configured but no service opted in. These are advisories — forward-auth still functions
+around them — so they warn, they don't block.
 
 ## 5. Manifest
 
-- **One file**, at the repo root (e.g. `sd-manifest.yaml`), **committed to git**.
-- Keyed by service → list of file paths that service generated:
+- **One file**, at the repo root: `splitdns-manifest.yaml`, **committed to git**.
+  (Formerly `sd-manifest.yaml`; the pre-rename file is auto-migrated via `os.Rename` on first
+  load, with a message to commit the rename.)
+- Keyed by owner → list of repo-relative file paths that owner generated. Owners are service
+  names **plus synthetic keys**: `@domain:<name>` (per-host TLS snippets), `@caddy-import` (the
+  per-host import files), and `@auth-snippet` (the per-host `(auth)` files):
 
 ```yaml
 docs:
-  - resolver/pihole/data/dnsmasq.d/generated/docs.conf
-  - appbox/caddy/data/sites/docs.caddy
-photos:
-  - resolver/pihole/data/dnsmasq.d/generated/photos.conf
-  - appbox/caddy/data/sites/photos.caddy
+  - optiplex/caddy/data/sites/docs.caddy
+  - pi/pihole/data/dnsmasq.d/docs.generated.conf
+"@domain:example.com":
+  - optiplex/caddy/data/tls/tls_example_com.caddy
+  - pi/caddy/data/tls/tls_example_com.caddy
+"@caddy-import":
+  - optiplex/caddy/data/splitdns.generated.caddy
+  - pi/caddy/data/splitdns.generated.caddy
+"@auth-snippet":
+  - optiplex/caddy/data/splitdns.auth.generated.caddy
+  - pi/caddy/data/splitdns.auth.generated.caddy
 ```
 
-- A `file → service` reverse index is built **in memory at load**, not stored.
 - Purpose:
   1. Distinguish generated files from hand-written ones (in manifest = ours).
-  2. Authority for safe deletion: `sync --complete` deletes only manifest-tracked files whose
-     backing service entry is gone. Files not in the manifest are **never** deleted.
-  3. Detect missing outputs (in manifest, absent on disk → recreate).
-- **No per-file checksums** in v1. Owned files are always overwritten on sync; that is the
-  contract. (Per-file checksums for "you hand-edited my output" warnings may be added later;
-  they would be additive and would not gate execution.)
-- **Rebuildable:** if the manifest is lost or unparseable, rebuild it by re-deriving each
-  service's expected filenames from `services.yaml` and recording those that exist on disk.
-  Caveat: files generated under an old naming scheme for since-deleted services become
-  unowned strays after manifest loss — acceptable, deleted by hand if ever noticed. This is
-  why the manifest is committed: it is only truly lost under genuine corruption.
+  2. **Authority for safe deletion**: GC (Complete-mode reconcile) deletes only
+     manifest-tracked files whose backing owner is gone or whose path is no longer desired.
+     Files not in the manifest are **never** deleted.
+  3. Detect missing/modified outputs for drift reporting (§9).
+- **No per-file checksums.** Owned files are always overwritten on reconcile; that is the
+  contract. Drift detection compares desired content to on-disk content at report time instead.
+- **Rebuildable:** if the manifest is unparseable, it is rebuilt by re-deriving each owner's
+  expected filenames from `services.yaml` and recording those that exist on disk (a warning is
+  printed). A missing manifest is treated as empty, not fatal. Committing the manifest is what
+  keeps since-deleted owners' files GC-able across the fleet.
 
 ## 6. Commands
 
-All commands operate on `services.yaml` in `~/docker` by default; `-C <dir>` runs as if
-started in `<dir>` (git-style). There is no environment variable for the repo path. Commands
-are **verb-first**: `<verb> <noun> <args>` (e.g. `add domain example.com`) — one consistent
-word order across services, hosts, and domains.
+All commands operate on `services.yaml` in `~/docker` by default; `-C`/`--chdir <dir>` runs as
+if started in `<dir>` (git-style). There is no environment variable for the repo path. Commands
+are **verb-first**: `<verb> <noun> <args>` (e.g. `add domain example.com`), routed through
+`dispatchNoun` in `cli.go`. Flags have long and short aliases (e.g. `--fqdn`/`-f`, `--all`/`-a`).
+`<command> --help` and `help <command>` print per-command help; the man page (`tools/genman`) is
+compiled from the same strings so it can't drift.
 
 ### 6.1 Service commands
 
 ```
-sd [-C <dir>] add    service <name> --fqdn <f> --host <h> --backend <b>
-sd [-C <dir>] update service <name> [--fqdn ...] [--host ...] [--backend ...]
-sd [-C <dir>] remove service <name>
-sd [-C <dir>] sync   [--incremental | --complete]
-sd [-C <dir>] list
-sd [-C <dir>] verify
+splitdns add     service <name> --fqdn <f> --host <h> --backend <b> [--auth]   (-f/-H/-b)
+splitdns update  service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth[=false]]
+splitdns remove  service <name>
+splitdns enable  service <name>
+splitdns disable service <name>
 ```
 
-- **`list`**: read-only. Prints hosts (marking the default dns_host), domains, and services with
-  per-service validity (✓ valid / ✗ skipped + reason, computed via the planner). Exits non-zero
-  if any service is invalid, like `sync`.
+- **`add`**: validates required flags, that the fqdn matches a defined domain, and that the host
+  exists — all **before** persisting, so a mistyped command never writes a half-formed entry.
+  Fails loud if the name or fqdn already exists. `--auth` opts the service into the `(auth)`
+  snippet (§4.5). Then persists and reconciles (Incremental).
+- **`update`**: fails if the service does not exist, or if no field flags were given (no-op is
+  reported, not silently "succeeded"). Only explicitly-set fields are changed; `--auth[=false]`
+  toggles forward-auth. Reconciles (Incremental).
+- **`remove`**: deletes the entry from YAML, deletes that service's manifest-tracked files, and
+  drops it from the manifest. A removal still needs a subsequent `apply` on the affected hosts to
+  drop the vhost/record from the running daemons.
+- **`disable`**: sets `disabled: true`, keeps the entry in YAML, and **deletes its generated
+  files immediately** so it stops being served. **`enable`** clears the flag and regenerates.
+  Disabled services are reported separately from validation-skipped ones.
 
-- **`add`**: fail loud if the service name or fqdn already exists. Otherwise mutate YAML, then
-  run sync logic for the resulting state.
-- **`update`**: fail loud if the service does not exist. Otherwise mutate YAML, then sync.
-- **`remove`**: delete the entry from YAML, delete that service's manifest-tracked files, drop
-  it from the manifest. (Targeted deletion shares the delete primitive with `--complete`.)
-- **`sync --incremental`** (default): write/update files for every valid entry. **Never deletes.**
-- **`sync --complete`**: incremental behavior plus GC — delete manifest-tracked files that have
-  no backing valid entry. Reconciles hand-deletions and orphans. Never touches non-manifest files.
+**Reconcile mode by mutation shape** (`runSync`): add/update/enable use **Incremental**
+(write/update, never delete). remove/disable use the targeted delete primitive. Every
+host/domain/dns-host/auth-snippet/auth-service mutation (§6.2) uses **Complete**, because they
+can orphan files (a removed service's records, or a host/domain's now-dead cross-product of TLS
+snippets, or auth-snippet content that changed on every host) that must be GC'd/rewritten so the
+repo is left clean and `apply` won't refuse on drift.
 
-`update`, `remove`, and `sync` read existing state: if `services.yaml` is **absent** (as
-opposed to present-but-empty), they refuse with a message pointing the user at `add` and exit
-non-zero. `add` is exempt — it creates `services.yaml` when missing. (A present-but-unparseable
-file remains the §7 globally-fatal case; missing ≠ malformed.)
+`update`, `remove`, `enable`, `disable` (and the read/host/domain commands) read existing state:
+if `services.yaml` is **absent** (as opposed to present-but-empty), they refuse with a message
+pointing at `add` and exit non-zero. `add` is exempt — it creates `services.yaml` when missing.
+(A present-but-unparseable file is the §7 globally-fatal case; missing ≠ malformed.)
 
-### 6.2 Building-block commands (host, domain)
-
-The `hosts` and `domains` maps a service references (§3) are managed by their own noun-first
-subcommands, so a usable `services.yaml` can be bootstrapped entirely via the CLI rather than by
-hand-editing. The command noun `host` matches the schema key `hosts:`.
+### 6.2 Building-block commands (host, domain) and `set`
 
 ```
-sd [-C <dir>] add    host   <name> <ip>
-sd [-C <dir>] remove host   <name>
-sd [-C <dir>] add    domain <name>
-sd [-C <dir>] remove domain <name>
+splitdns add    host   <name> <ip>
+splitdns remove host   <name>
+splitdns add    domain <name>
+splitdns remove domain <name>
+splitdns set    dns-host     <name>
+splitdns set    auth-snippet <path>          ('-' clears)
+splitdns set    auth-service <name>          ('-' clears)
 ```
 
 - **`add host <name> <ip>`**: both positional. The IP must be a valid address and unique across
-  hosts (two hosts sharing one is a typo). A host's name **is** its repo directory; that
-  directory must already exist (a host with no matching directory is treated as a typo and
-  rejected). Output subpaths under the directory are fixed (§4). Fail loud if the host already exists.
-- **`add domain <name>`**: name only. The TLS snippet name and cert path are derived (§4.3), so
-  no flag is needed; the snippet is generated on the next sync.
-  Fail loud if the domain already exists.
-- **`host remove` / `domain remove`**: **refuse** while any service still references the target,
-  and report the blockers. A host is referenced if any service names it as `host` or resolves to
-  it as `dns_host` (including via `defaults.dns_host`); a domain is referenced if any service's
-  fqdn matches it as exact or suffix. The user must reassign or remove those services first.
-  This prevents silently orphaning service entries.
+  hosts. A host's name **is** its repo directory; that directory must already exist (a name with
+  no matching directory is treated as a typo and rejected). Fails loud if the host exists.
+- **`add domain <name>`**: name only; the TLS snippet name and cert path are derived (§4.3).
+  Fails loud if the domain exists.
+- **`set dns-host <name>`**: sets `defaults.dns_host`. The named host must already exist. Without
+  it, a CLI-only bootstrap leaves `dns_host` unset and reconcile refuses to route records.
+- **`set auth-snippet <path>`**: sets `defaults.auth_snippet` (the forward-auth block source,
+  §4.5). `-` clears it (reverting `(auth)` to the empty stub).
+- **`set auth-service <name>`**: sets `defaults.auth_service` (the portal service, §4.5). The
+  named service must exist. `-` clears it (the auth backend's block stops preserving
+  `X-Forwarded-Host`).
+- **`remove host` / `remove domain`**: **refuse** while any service still references the target,
+  and report the blockers. A host is referenced if any service names it as `host` **or** it is
+  the resolver (`defaults.dns_host`); a domain is referenced if any service's fqdn matches it
+  exactly or as a suffix. Reassign/remove those services first.
 
-These commands mutate `machines`/`domains` and persist the YAML, but emit **no** generated files
-of their own — machines and domains have no per-machine output. A subsequent `sync` regenerates
-any service output affected by the change.
+All of these mutate the YAML and then reconcile in **Complete** mode, leaving the repo clean.
+They emit no per-host/per-domain output of their own beyond the derived TLS/auth snippets.
 
-**Single-writer invariant:** `add`/`update`/`remove` (and `host`/`domain` mutations) must **not**
-contain their own generated-file-writing logic. They mutate the YAML struct in memory, persist
-it, then (for service mutations) call the shared sync engine. The sync engine is the only code
-that writes or deletes generated files.
+**Single-writer invariant:** the command handlers must **not** contain their own
+generated-file-writing logic. They mutate the YAML struct in memory, persist it, then call the
+shared reconcile engine (`internal/sync`), which is the only code that writes or deletes
+generated files.
+
+### 6.3 Making config live: `apply`
+
+```
+splitdns apply
+```
+
+`apply` makes the on-disk generated config **live on the host it runs on**. It is **host-split**:
+it identifies which managed host it is by matching a local interface IP against `hosts[].ip`
+(`localHost`), then performs the half (or halves) it owns:
+
+- **DNS half** (if this host is `dns_host`): `docker restart pihole`. Pi-hole v6 does **not**
+  reload `conf-dir` on `reloaddns`; a restart is required.
+- **Caddy half** (if this host runs any non-disabled service): `caddy validate` **then**
+  `caddy reload`. Validate runs first because it provisions the TLS app (loading cert files from
+  disk), so a missing/wrong cert aborts here with a clear error instead of failing mid-reload.
+
+`apply` **hard-refuses if the repo has drift** (the one command that does — everything else
+reports-but-proceeds). The fix path is `doctor --fix` then `apply` again. Command output is
+captured and shown only on failure; success prints just the ticks. Reload is idempotent, so
+`apply` acts unconditionally on whatever this host owns. Run it on each affected host — it cannot
+SSH.
+
+### 6.4 Repo hygiene: `doctor`
+
+```
+splitdns doctor [--fix]     (-f)
+```
+
+`doctor` audits the repo (no docker needed) and, with `--fix`, repairs it. Three checks:
+
+1. **Gitignore**: are any generated output paths swallowed by a `.gitignore` rule (e.g. a broad
+   `**/data/**`)? Such files generate fine but never commit/deploy. `--fix` writes a managed
+   negation block to the repo-root `.gitignore` (inside `# >>> splitdns managed >>>` markers) and
+   re-verifies. (The auth-snippet source is loaded here too, so a bad `auth_snippet` path surfaces.)
+2. **Caddyfile imports**: does each host's `Caddyfile` import `splitdns.generated.caddy`
+   (§4.4)? `--fix` appends the import line if missing.
+3. **Generated-file drift** (§9): missing / modified / orphaned generated files vs. what the
+   plan says should exist. `--fix` runs a full **Complete** reconcile — rewriting missing/modified
+   files and GC'ing orphaned tracked files (this is what the retired `sync --complete` did).
+
+Exits non-zero if any problem remains.
+
+### 6.5 Read-only inspection: `list`, `verify`, `measure`
+
+```
+splitdns list   [--all]                 (-a)
+splitdns verify [--all] [<fqdn>]        (-a)
+splitdns measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>   (-c/--ab, -n, -w)
+```
+
+- **`list`**: plain inventory of hosts (marking `dns_host`), domains, and services. It is **not**
+  a validity view — it runs no per-service planner checks and exits 0 (except on load failure).
+  It warns first if `dns_host` is unset, marks disabled services `[disabled]`, and reports repo
+  drift at the end. **Services default to the current host** (matched by local IP); `--all` shows
+  every host. If the local IP matches no host, it falls back to showing everything.
+- **`verify`** (§8): live resolution/serving checks, **host-split** like `apply`. Defaults to
+  services this host can actually check (it is the resolver or the service host); `--all`
+  includes the rest. An explicit `<fqdn>` always reports. Needs docker.
+- **`measure`**: times the HTTPS request breakdown (dns / connect / tls / ttfb) for a service,
+  fqdn, or arbitrary URL, over `-n` timed runs after `-w` untimed warm-ups (embedded
+  `measure.sh`; needs bash/curl/awk). `--compare` A/Bs the split-horizon path against the public
+  path via `curl --resolve` (read-only IP pinning, no toggling of pihole); it is restricted to a
+  configured **service** and must run **on the dns-host** (the public-IP lookup uses DoH egress,
+  sanctioned only on the resolver). The target may appear on either side of the flags.
+
+### 6.6 Other
+
+```
+splitdns version | --version | -v
+splitdns help [<command>]
+splitdns -C, --chdir <dir> ...
+```
 
 ## 7. Validation (per-entry, non-fatal)
 
-The planner validates each service independently, collecting errors rather than stopping:
+The planner (`plan.Build`) validates each service independently, collecting errors rather than
+stopping:
 
-- `fqdn` is well-formed and its domain suffix matches a `domains` entry (else: no tls_import →
-  skip, report).
-- `host` references a defined machine that has an `ip` (else skip, report).
-- resolved `dns_host` references a defined machine (else skip, report).
-- `backend` matches `name:port` shape (else skip, report).
-- `fqdn` is unique across services (collision → both conflicting entries fail, report both).
-- generated filenames are unique (naming collision → conflicting entries fail, report).
+- `fqdn` is well-formed (regex) and its longest matching suffix is a defined domain (else skip).
+- `host` references a defined host that has a non-empty `ip` (else skip).
+- `defaults.dns_host` is set and references a defined host (else skip).
+- `backend` matches `name:port` shape (else skip).
+- `fqdn` is unique across services (collision → **both** conflicting entries skipped, reported).
+- generated output paths are unique among survivors (path collision → skipped, reported).
+- **auth loop guard**: a service with `auth: true` whose name equals `defaults.auth_service` is
+  refused and skipped — protecting the auth backend with itself creates a redirect loop (§4.5).
 
-Globally fatal (stop, generate nothing):
-- `services.yaml` cannot be parsed.
+Disabled services are skipped with reason `"disabled"` and reported separately (not as errors).
 
-Manifest unparseable is **not** fatal → rebuild (§5) and continue.
+Globally fatal (stop, generate nothing): `services.yaml` cannot be parsed. Manifest unparseable
+is **not** fatal → rebuild (§5) and continue. An unreadable `auth_snippet` source is **not**
+fatal either → keep-last-good + report (§4.5, §8).
 
-## 8. Error reporting and exit codes
+## 8. Error reporting, exit codes, and `verify`
 
-- **Collect all errors and report them together** at the end of a run. Do not fail on the first
-  error and force a fix-rerun-discover-next treadmill.
-- Print a summary line, e.g.:
-  `synced 11/12 services; 1 skipped: docs (unknown host 'appbx' — defined hosts: resolver, appbox)`
-- **Exit non-zero if any entry was skipped or any error occurred**, so a deploy script can
-  detect partial success. A silently-incomplete sync must be both loud in output and detectable
-  in the exit code.
+- **Collect all errors and report them together** at the end of a run — no fix-rerun-discover
+  treadmill.
+- Print a summary (`Synced N/M services.`), list changed and skipped services with reasons,
+  print any half-configured-auth warnings (§4.5), and print per-host `apply` next-steps when
+  files changed.
+- **Exit non-zero if any entry was skipped or an error occurred** (including an unreadable
+  `auth_snippet` source), so a deploy script can detect partial success. Output uses colored
+  glyphs (`✓ ✗ ⚠`) only when stdout is a TTY and `NO_COLOR` is unset.
 
-## 9. Recoverability
+**`verify`** confirms behavior against the *running* system, not config syntax. It is host-split
+(§6.5) and, per applicable host, runs (all via `docker exec`):
 
-- Any interrupted command leaves a state fully repaired by a subsequent `sync --complete`.
-  No transactional file I/O is required; reconciliation is the recovery mechanism.
-- Write files atomically (write to temp in the same dir, `fsync`, `rename`) so an interrupted
-  write never leaves a half-written `.conf`/`.caddy`.
+- **Resolver side** (in the `pihole` container):
+  - `dig +short A <fqdn> @127.0.0.1` must equal the service host IP (else the conf isn't loaded
+    and pihole is forwarding upstream).
+  - Inspect `pihole.log` to confirm the answer was `config` (answered locally), not `forwarded`
+    or `cached`.
+  - `dig +short AAAA <fqdn> @127.0.0.1` must be `::` (never `::1`).
+  - `dig +short -t TYPE65 <fqdn> @127.0.0.1` must be **NODATA** (else the HTTPS/SVCB record leaks
+    a public endpoint — what the §4.1 `local=` line prevents).
+- **Service-host side** (in the `caddy` container):
+  - `caddy adapt` the Caddyfile and confirm the fqdn appears in the *adapted* config (proves the
+    imports actually loaded the generated site block).
+  - `caddy validate` passes.
+  - the generated site's `reverse_proxy` uses the declared backend.
+  - a live local HTTPS request (`curl --resolve <fqdn>:443:127.0.0.1`) returns a real status
+    code — the running-state proof that the reloaded config actually serves the host.
+
+Exits non-zero if any check fails. (The original design used a host-side `getent` client-view
+check; the implementation instead does the richer in-container checks above, which don't depend
+on the host having `dnsutils`.)
+
+## 9. Recoverability and drift
+
+- Any interrupted command leaves a state fully repaired by a subsequent Complete reconcile
+  (`doctor --fix`). No transactional file I/O is required beyond atomic single-file writes;
+  reconciliation is the recovery mechanism.
+- All file writes are **atomic**: write to a temp file in the same dir, `fsync`, `rename`
+  (`config.atomicWrite`), so an interrupted write never leaves a half-written `.conf`/`.caddy`.
+- **Deletion order**: DNS records (dnsmasq `.conf`) are deleted **before** Caddy blocks, so an
+  interrupted deletion leaves the safe residual "the name no longer resolves" rather than "it
+  resolves to a host that no longer routes it."
+- **Drift** (`internal/cli/drift.go`) is a pure repo concept (no docker):
+  - *Missing*: a desired generated file is absent on disk.
+  - *Modified*: a generated file's on-disk content differs from what the plan would write. (This
+    is how an edited `auth_snippet` source surfaces: the generated `(auth)` file is flagged
+    modified until re-synced.)
+  - *Orphaned*: a manifest-tracked file no longer desired that still exists (the GC target).
+  Most commands report drift and proceed; only `apply` refuses on it (§6.3).
 
 ## 10. On-disk paths
 
-Output subpaths under each host's directory are **fixed** (not per-host configurable):
+Output subpaths under each host's directory are **fixed** (not per-host configurable, though the
+directory name itself can be overridden via `hosts[].dir`):
 
-- DNS records: `<host-dir>/pihole/data/dnsmasq.d/generated/<service>.conf`
+- DNS records: `<host-dir>/pihole/data/dnsmasq.d/<service>.generated.conf`
 - Caddy sites: `<host-dir>/caddy/data/sites/<service>.caddy`
+- TLS snippets: `<host-dir>/caddy/data/tls/tls_<domain>.caddy`
+- Caddy import: `<host-dir>/caddy/data/splitdns.generated.caddy`
+- Auth snippet: `<host-dir>/caddy/data/splitdns.auth.generated.caddy`
 
-where `<host-dir>` is the host's name (a host's name **is** its repo directory; see §6.2). These
-match the real homelab layout. Per-host path overrides were considered (so layouts could differ
-per host) but dropped as unused complexity — every host follows the same convention. If a host
-ever needs a different layout, reintroduce an override field rather than hardcoding exceptions.
+where `<host-dir>` is the host's `ResolvedDir` (its `dir:` or, by convention, its name).
 
-## 11. Suggested package layout
+## 11. Package layout
 
-- `config`   — load, mutate, persist `services.yaml`; the schema structs.
-- `plan`     — validate entries → desired set of (path, content) files; collect per-entry errors.
-- `manifest` — load/save/rebuild the manifest; reverse index; deletion set computation.
-- `render`   — templates for the dnsmasq `.conf` and Caddy `.caddy` files.
-- `sync`     — the reconcile engine: diff desired vs manifest, write/delete, atomic writes.
-- `cli`      — command parsing (stdlib `flag` or cobra), wiring; thin `main.go`.
+- `config`   — load, mutate, persist `services.yaml`; schema structs; the atomic-write
+  primitive; `LoadAuthSnippet` (reads the external auth-snippet source).
+- `plan`     — validate entries → desired set of `(path, content)` files; collect per-entry
+  errors; synthetic `@domain:` / `@caddy-import` / `@auth-snippet` owners;
+  `PinAuthSnippetToDisk` (keep-last-good).
+- `render`   — pure string rendering for the dnsmasq `.conf`, Caddy site, TLS snippet, import,
+  and `(auth)` snippet files.
+- `manifest` — load/save/rebuild the manifest; the deletion authority.
+- `sync`     — the reconcile `Engine`: diff desired vs manifest, write/delete, GC (Complete mode),
+  atomic writes. **The only writer/deleter of generated files.**
+- `cli`      — command parsing (stdlib `flag`), wiring, all user-facing output; help text
+  (`UsageText` + `HelpTopics`, single-sourced with the man page); thin `main.go` calls `cli.Run`.
+- `tools/genman` — compiles the CLI help strings into `man/splitdns.1.gz` at release time.
 
-## 12. Explicit non-goals (v1)
+## 12. Explicit non-goals
 
-- No reloading of Pi-hole or Caddy. (Deploy concern: a separate per-machine deploy wrapper
-  should run `docker compose up -d` and, if generated files changed in the pull, exec
-  `pihole restartdns` / `caddy reload`. A changed bind-mounted file does **not** trigger a
-  container restart on its own, so without this hook the new config is on disk but not live.)
-- No SSH/orchestration. The tool writes into the local repo checkout only.
-- No reachability/health checks of backends.
-- No per-file checksums or clobber-warnings.
-- No editing of machines' main Caddyfiles.
+- No SSH/orchestration. The tool writes into the local repo checkout only; `apply` acts on the
+  local host's daemons and must be run per-host.
+- No reachability/health checks of backends (only `name:port` shape validation).
+- No per-file checksums or "you hand-edited my output" gate (drift *reports* modified files; it
+  does not block except at `apply`).
+- No editing of machines' main Caddyfiles beyond appending the one import line under
+  `doctor --fix`.
+- No parsing/validation of the forward-auth snippet body — it is copied verbatim and is opaque
+  to splitdns (§4.5).
+- **No public-horizon management.** splitdns sets up the *internal* horizon only (Pi-hole record
+  + Caddy block). It deliberately does **not** create, verify, or warn about the *public*
+  horizon — the public DNS + tunnel ingress that must already exist for a split-horizon setup to
+  be meaningful. On this homelab that public side is a `cloudflare.io/hostname` label on the
+  service's container, read off the docker socket by cloudflared-wrapper. Rationale for keeping
+  it out of splitdns:
+  - splitdns only writes files it *owns* (its Pi-hole/Caddy subdirs). The tunnel label lives in
+    a hand-maintained `docker-compose.yml` — a foreign, human-owned file. Surgically editing it
+    (preserving comments/formatting) is a categorically riskier operation than rewriting an owned
+    file wholesale.
+  - Any awareness of the public side (even a read-only warning) couples splitdns to one specific
+    tunnel tool's private label convention, eroding its generator-agnostic core (Pi-hole + Caddy,
+    nothing else). Swap tunnels and splitdns would be wrong.
+  - The tunnel tool already reads the docker socket and is better placed to warn when a container
+    is served but has no ingress.
 
-## 13. Post-deploy verification (`sd verify`)
-
-After a deploy that changed DNS records, verify **resolution against the running resolver**
-rather than trusting config syntax. This is exposed as `sd verify`, run **on the resolver host**
-(it needs the live `pihole` container). For each valid service it performs two checks:
-
-- **pihole's own view** (in-container): `docker exec pihole dig +short {A,AAAA} <fqdn> @127.0.0.1`
-  — asserts A == the service host IP and AAAA == `::`. Catches reload-didn't-happen and
-  dir-not-sourced.
-- **client view** (host): `getent hosts <fqdn>` — resolves via the system's real resolver path
-  (= pihole, since all machines use it), asserting the host IP. Catches an overridden record or
-  a leak past split-horizon. `getent` is used (not `dig`) so no `dnsutils` install is needed.
-
-`pihole-FTL --test` only checks syntax; it does not confirm a record resolves. `sd verify` is
-the check that catches reload-didn't-happen, dir-not-sourced, and overridden-record. It exits
-non-zero if any check fails. (Originally scoped to the deploy wrapper; promoted to a command
-since it's a pure shell-out with no new code dependency.)
+  Gotcha this documents: a service can have a correct *internal* horizon (splitdns did its job)
+  yet be publicly broken because the `cloudflare.io/hostname` label is missing — the FQDN then
+  falls back to the zone apex publicly (e.g. `auth.palmund.net` → `palmund.net`). The label is a
+  manual, per-service step that lives with the compose file, not with splitdns.

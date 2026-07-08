@@ -115,11 +115,11 @@ func TestBuild_ServiceAuthImportsSnippet(t *testing.T) {
 	}
 }
 
-// Loop guard: a service whose own fqdn is referenced by the auth snippet (i.e.
-// it IS the auth backend) must be skipped if it sets auth:true.
+// Loop guard: the service named as auth_service (the auth backend) must be
+// skipped if it also sets auth:true — protecting the portal loops.
 func TestBuild_AuthLoopGuard(t *testing.T) {
 	c := base()
-	c.AuthSnippetBody = "forward_auth https://auth.example.com { uri /x }"
+	c.Defaults.AuthService = "portal"
 	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091", Auth: true}
 
 	p := Build(c)
@@ -130,12 +130,36 @@ func TestBuild_AuthLoopGuard(t *testing.T) {
 	if !strings.Contains(reason, "redirect loop") {
 		t.Errorf("skip reason should mention the loop: %q", reason)
 	}
-	// Same service WITHOUT auth is fine.
+	// Same service WITHOUT auth is fine (it's the backend, not protected).
 	c2 := base()
-	c2.AuthSnippetBody = "forward_auth https://auth.example.com { uri /x }"
+	c2.Defaults.AuthService = "portal"
 	c2.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091"}
 	if _, skipped := Build(c2).Skipped["portal"]; skipped {
 		t.Errorf("portal without auth should not be skipped")
+	}
+}
+
+// The auth_service's site block preserves X-Forwarded-Host; other blocks don't.
+func TestBuild_AuthServiceHeaderPreserve(t *testing.T) {
+	c := base()
+	c.Defaults.AuthService = "portal"
+	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091"}
+	c.Services["docs"] = config.Service{FQDN: "docs.example.com", Host: "appbox", Backend: "paperless:8000"}
+
+	p := Build(c)
+	caddyOf := func(svc string) string {
+		for _, f := range p.Files[svc] {
+			if strings.HasSuffix(f.Path, ".caddy") {
+				return f.Content
+			}
+		}
+		return ""
+	}
+	if !strings.Contains(caddyOf("portal"), "header_up X-Forwarded-Host {header.X-Forwarded-Host}") {
+		t.Errorf("auth_service block should preserve X-Forwarded-Host:\n%s", caddyOf("portal"))
+	}
+	if strings.Contains(caddyOf("docs"), "X-Forwarded-Host") {
+		t.Errorf("non-auth-backend block should NOT preserve X-Forwarded-Host:\n%s", caddyOf("docs"))
 	}
 }
 

@@ -213,8 +213,8 @@ func dispatchNoun(repoRoot, cfgPath, verb string, args []string) int {
 // dispatchSet routes `set <thing> <args>`: `set dns-host` and `set auth-snippet`.
 func dispatchSet(cfgPath string, args []string) int {
 	if len(args) < 1 {
-		errf("Missing what to set — expected dns-host or auth-snippet.")
-		hint("Usage: splitdns set dns-host <name>  |  splitdns set auth-snippet <path>")
+		errf("Missing what to set — expected dns-host, auth-snippet, or auth-service.")
+		hint("Usage: splitdns set dns-host <name>  |  splitdns set auth-snippet <path>  |  splitdns set auth-service <name>")
 		return 2
 	}
 	switch args[0] {
@@ -222,8 +222,10 @@ func dispatchSet(cfgPath string, args []string) int {
 		return cmdSetDNSHost(cfgPath, args[1:])
 	case "auth-snippet":
 		return cmdSetAuthSnippet(cfgPath, args[1:])
+	case "auth-service":
+		return cmdSetAuthService(cfgPath, args[1:])
 	default:
-		errf("Unknown setting %q — expected dns-host or auth-snippet.", args[0])
+		errf("Unknown setting %q — expected dns-host, auth-snippet, or auth-service.", args[0])
 		return 2
 	}
 }
@@ -314,6 +316,49 @@ func syncBlockedReason(cfg *config.Config) string {
 		return "no dns_host is set, so DNS records can't be routed. Set the resolver with: splitdns set dns-host <name>"
 	}
 	return ""
+}
+
+// authConfigWarnings returns non-fatal advisories about a half-configured
+// forward-auth setup. Forward-auth still authenticates without these, so they
+// are warnings, not sync blockers (report-but-proceed):
+//   - snippet set but no auth_service: the auth backend's block won't preserve
+//     X-Forwarded-Host, so post-login redirects loop back to the portal (the
+//     exact bug this pairing exists to prevent).
+//   - auth_service set but no snippet: the (auth) block is an empty stub, so the
+//     header-preserve is emitted but nothing uses it — pointless, likely a
+//     mistake.
+//   - auth_service names a service that doesn't exist.
+//   - fully configured but no service opted in (auth: true): a gentle note that
+//     nothing is actually protected yet.
+func authConfigWarnings(cfg *config.Config) []string {
+	var w []string
+	snippet := cfg.Defaults.AuthSnippet != ""
+	service := cfg.Defaults.AuthService != ""
+
+	if snippet && !service {
+		w = append(w, "auth_snippet is set but auth_service is not — post-login redirects will loop back to the auth portal. Name the auth backend with: splitdns set auth-service <name>")
+	}
+	if service && !snippet {
+		w = append(w, "auth_service is set but auth_snippet is not — the (auth) snippet is an empty no-op, so forward-auth does nothing. Set it with: splitdns set auth-snippet <path>")
+	}
+	if service {
+		if _, ok := cfg.Services[cfg.Defaults.AuthService]; !ok {
+			w = append(w, fmt.Sprintf("auth_service %q is not a defined service.", cfg.Defaults.AuthService))
+		}
+	}
+	if snippet && service {
+		used := false
+		for _, s := range cfg.Services {
+			if s.Auth {
+				used = true
+				break
+			}
+		}
+		if !used {
+			w = append(w, "forward-auth is configured but no service uses it — opt one in with: splitdns update service <name> --auth")
+		}
+	}
+	return w
 }
 
 func cmdUpdate(repoRoot, cfgPath string, args []string) int {
@@ -529,6 +574,9 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 	}
 	if len(cfg.Domains) == 0 {
 		fmt.Println("Note: no domains defined — run 'splitdns add domain <name>' (a service's fqdn must match a domain).")
+	}
+	for _, msg := range authConfigWarnings(cfg) {
+		fmt.Printf("%s %s\n", warn, msg)
 	}
 
 	{

@@ -69,16 +69,23 @@ func cmdList(cfgPath string, args []string) int {
 	} else {
 		fmt.Printf("\n%s== Services (%d) ==%s\n", boldOn, len(svcNames), boldOff)
 	}
-	// Surface the repo-global forward-auth snippet source (or that none is set),
-	// so the per-service AUTH column has visible context.
+	// Surface the repo-global forward-auth config (snippet source + which
+	// service is the auth backend), so the per-service AUTH column has context.
 	if cfg.Defaults.AuthSnippet != "" {
-		fmt.Printf("  auth snippet: %s\n", cfg.Defaults.AuthSnippet)
+		fmt.Printf("  auth snippet:  %s\n", cfg.Defaults.AuthSnippet)
 	} else {
-		fmt.Println("  auth snippet: (none — set with 'splitdns set auth-snippet <path>')")
+		fmt.Println("  auth snippet:  (none — set with 'splitdns set auth-snippet <path>')")
+	}
+	if cfg.Defaults.AuthService != "" {
+		fmt.Printf("  auth service:  %s\n", cfg.Defaults.AuthService)
 	}
 	printServiceTable(cfg, svcNames)
 	if filtered && len(svcNames) < len(cfg.Services) {
 		fmt.Printf("  (%d on other hosts hidden — use --all to show)\n", len(cfg.Services)-len(svcNames))
+	}
+
+	for _, msg := range authConfigWarnings(cfg) {
+		fmt.Printf("%s %s\n", warn, msg)
 	}
 
 	repoRoot := filepath.Dir(cfgPath)
