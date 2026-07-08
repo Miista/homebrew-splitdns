@@ -94,7 +94,7 @@ func TestBuild_AuthSnippetAlwaysPresent(t *testing.T) {
 func TestBuild_ServiceAuthImportsSnippet(t *testing.T) {
 	c := base()
 	c.AuthSnippetBody = "forward_auth https://auth.example.com {\n\turi /api/authz/forward-auth\n}"
-	c.Services["docs"] = config.Service{FQDN: "docs.example.com", Host: "appbox", Backend: "paperless:8000", Auth: true}
+	c.Services["docs"] = config.Service{FQDN: "docs.example.com", Host: "appbox", Backend: "paperless:8000", Auth: config.AuthForward}
 
 	p := Build(c)
 	if len(p.Skipped) != 0 {
@@ -115,12 +115,48 @@ func TestBuild_ServiceAuthImportsSnippet(t *testing.T) {
 	}
 }
 
+// An oidc service renders a PLAIN reverse_proxy (no `import auth`) — the app
+// authenticates itself, so splitdns adds no Caddy-level gate.
+func TestBuild_ServiceOIDCPlainProxy(t *testing.T) {
+	c := base()
+	c.Services["app"] = config.Service{FQDN: "app.example.com", Host: "appbox", Backend: "app:3000", Auth: config.AuthOIDC}
+
+	p := Build(c)
+	if _, skipped := p.Skipped["app"]; skipped {
+		t.Fatalf("oidc service should not be skipped: %v", p.Skipped)
+	}
+	var caddy File
+	for _, f := range p.Files["app"] {
+		if strings.HasSuffix(f.Path, ".caddy") {
+			caddy = f
+		}
+	}
+	if strings.Contains(caddy.Content, "import auth") {
+		t.Errorf("oidc service must NOT import auth: %q", caddy.Content)
+	}
+	if !strings.Contains(caddy.Content, "reverse_proxy app:3000") {
+		t.Errorf("oidc service should reverse_proxy: %q", caddy.Content)
+	}
+}
+
+// Loop guard: the service named as auth_service (the auth backend) must be
+// skipped if it also sets any auth mode (forward OR oidc) — protecting the
+// portal loops.
+func TestBuild_AuthLoopGuardOIDC(t *testing.T) {
+	c := base()
+	c.Defaults.AuthService = "portal"
+	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091", Auth: config.AuthOIDC}
+	if _, skipped := Build(c).Skipped["portal"]; !skipped {
+		t.Fatalf("oidc auth_service should be skipped by the loop guard")
+	}
+}
+
 // Loop guard: the service named as auth_service (the auth backend) must be
 // skipped if it also sets auth:true — protecting the portal loops.
 func TestBuild_AuthLoopGuard(t *testing.T) {
 	c := base()
 	c.Defaults.AuthService = "portal"
-	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091", Auth: true}
+	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091", Auth: config.AuthForward}
 
 	p := Build(c)
 	reason, skipped := p.Skipped["portal"]

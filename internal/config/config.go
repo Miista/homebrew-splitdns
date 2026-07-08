@@ -23,7 +23,67 @@ const (
 	DefaultCaddyDataDir  = "caddy/data"
 	DefaultCaddySitesDir = "caddy/data/sites"
 	DefaultCaddyTLSDir   = "caddy/data/tls"
+	// DefaultAutheliaConfig is the fixed convention path (relative to the
+	// auth_service host's repo directory) of the Authelia configuration file
+	// that declares OIDC clients. splitdns reads it read-only to verify that an
+	// OIDC client exists for each auth: oidc service; it never writes it.
+	DefaultAutheliaConfig = "authelia/data/config/configuration.yml"
 )
+
+// AuthMode is how a service authenticates. Three states:
+//
+//   - AuthNone ("")     — no auth; a plain reverse_proxy is rendered.
+//   - AuthForward ("forward") — Caddy forward-auth: the site imports the (auth)
+//     snippet before proxying (splitdns adds the auth gate).
+//   - AuthOIDC ("oidc") — the app speaks OIDC itself; splitdns adds NO forward
+//     auth (a PLAIN reverse_proxy), and instead validates read-only that an
+//     Authelia OIDC client is registered for the service.
+//
+// Rendering forward vs oidc differently is deliberate: an oidc service must not
+// look identical to a no-auth service in the generated Caddy — that legibility
+// gap would hide whether a service is protected.
+type AuthMode string
+
+const (
+	AuthNone    AuthMode = ""
+	AuthForward AuthMode = "forward"
+	AuthOIDC    AuthMode = "oidc"
+)
+
+// UnmarshalYAML accepts either the legacy bool form (`auth: true` → forward,
+// `auth: false` → none) or the string form (`auth: forward` / `auth: oidc` /
+// `auth: none`). Back-compat: existing services.yaml files written with the
+// bool form still round-trip. An unrecognized string is treated as AuthNone
+// (fail safe: an unknown mode never silently renders as protected), and an
+// error is returned so the typo surfaces rather than being swallowed.
+func (m *AuthMode) UnmarshalYAML(value *yaml.Node) error {
+	// Try bool first (legacy `auth: true`/`auth: false`).
+	var b bool
+	if err := value.Decode(&b); err == nil {
+		if b {
+			*m = AuthForward
+		} else {
+			*m = AuthNone
+		}
+		return nil
+	}
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return fmt.Errorf("auth must be a bool or one of forward/oidc/none: %w", err)
+	}
+	switch AuthMode(s) {
+	case AuthNone, "none":
+		*m = AuthNone
+	case AuthForward:
+		*m = AuthForward
+	case AuthOIDC:
+		*m = AuthOIDC
+	default:
+		*m = AuthNone
+		return fmt.Errorf("unknown auth mode %q — expected forward, oidc, or none", s)
+	}
+	return nil
+}
 
 // Host is one host in the homelab, owning a directory in the repo. The
 // directory defaults to the host's name (its key in the hosts map); the dir
@@ -73,10 +133,14 @@ type Service struct {
 	Host     string `yaml:"host"`
 	Backend  string `yaml:"backend"`
 	Disabled bool   `yaml:"disabled,omitempty"`
-	// Auth opts this service into the auth snippet: its site block imports the
-	// (auth) snippet before proxying. The snippet's content is repo-global
-	// (defaults.auth_snippet); Auth only decides which services reference it.
-	Auth bool `yaml:"auth,omitempty"`
+	// Auth is how this service authenticates (none/forward/oidc, see AuthMode).
+	// - forward opts into the (auth) snippet: its site block imports (auth)
+	//   before proxying. The snippet content is repo-global (defaults.auth_snippet).
+	// - oidc means the app does OIDC itself; splitdns renders a plain
+	//   reverse_proxy and instead verifies an Authelia OIDC client exists.
+	// omitempty drops none (""); forward/oidc serialize as their string form.
+	// Legacy `auth: true` is accepted on load and re-emitted as `auth: forward`.
+	Auth AuthMode `yaml:"auth,omitempty"`
 }
 
 // Config is the in-memory representation of services.yaml.

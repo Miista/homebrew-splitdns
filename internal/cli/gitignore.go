@@ -137,7 +137,7 @@ func cmdDoctor(cfgPath string, args []string) int {
 	// Report-but-proceed: these don't corrupt generated files, but the
 	// snippet-without-auth_service case reproduces the redirect-loop bug, so it
 	// counts as a doctor problem (non-zero exit). The rest are advisory.
-	if warns := authConfigWarnings(cfg); len(warns) > 0 {
+	if warns := authConfigWarnings(repoRoot, cfg); len(warns) > 0 {
 		for _, msg := range warns {
 			fmt.Printf("%s %s\n", warn, msg)
 		}

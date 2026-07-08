@@ -17,26 +17,32 @@ type HelpTopic struct {
 var HelpTopics = []HelpTopic{
 	{"add service", `splitdns add service — declare a service and generate its DNS/Caddy config
 
-Usage: splitdns add service <name> --fqdn <fqdn> --host <host> --backend <name:port> [--auth]
+Usage: splitdns add service <name> --fqdn <fqdn> --host <host> --backend <name:port> [--auth-mode forward|oidc]
 
 Flags:
   -f, --fqdn <fqdn>       Public name the service is reached at (must match a declared domain).
   -H, --host <host>       Host (repo directory) that runs the service.
   -b, --backend <n:port>  reverse_proxy upstream, e.g. mealie:9000.
-      --auth              Put the service behind the (auth) snippet (imports it).
-                          Requires 'splitdns set auth-snippet <path>' to be configured.
+      --auth-mode <mode>  How the service authenticates: forward, oidc, or none (default none).
+                          forward imports the (auth) snippet (Caddy forward-auth);
+                          requires 'splitdns set auth-snippet <path>'. oidc renders a
+                          PLAIN reverse_proxy (the app speaks OIDC itself — splitdns adds
+                          no gate) and verifies read-only that an Authelia OIDC client exists.
+      --auth              Back-compat shorthand for --auth-mode forward.
 
 Regenerates files immediately, then prints which hosts need 'splitdns apply'.`},
 
 	{"update service", `splitdns update service — change a service's fqdn, host, backend, or auth
 
-Usage: splitdns update service <name> [--fqdn <fqdn>] [--host <host>] [--backend <name:port>] [--auth[=false]]
+Usage: splitdns update service <name> [--fqdn <fqdn>] [--host <host>] [--backend <name:port>] [--auth-mode forward|oidc|none]
 
 Flags:
   -f, --fqdn <fqdn>       New public name (must match a declared domain).
   -H, --host <host>       New host (repo directory).
   -b, --backend <n:port>  New reverse_proxy upstream.
-      --auth[=false]      Turn the (auth) snippet on (--auth) or off (--auth=false) for this service.
+      --auth-mode <mode>  Set the auth mode: forward (import (auth) snippet), oidc
+                          (plain reverse_proxy; app does OIDC itself), or none (clear).
+      --auth[=false]      Back-compat shorthand: --auth = forward, --auth=false = none.
 
 Only the given flags change; regenerated files and apply-hints follow.`},
 

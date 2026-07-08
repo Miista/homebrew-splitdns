@@ -15,6 +15,8 @@ import (
 	"splitdns/internal/manifest"
 	"splitdns/internal/plan"
 	syncpkg "splitdns/internal/sync"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -246,8 +248,13 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 	fs.StringVar(host, "H", "", "alias for --host")
 	backend := fs.String("backend", "", "reverse_proxy upstream name:port")
 	fs.StringVar(backend, "b", "", "alias for --backend")
-	auth := fs.Bool("auth", false, "put this service behind the (auth) snippet")
+	auth := fs.Bool("auth", false, "shorthand for --auth-mode forward")
+	authMode := fs.String("auth-mode", "", "auth mode: forward|oidc|none")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	mode, ok := resolveAuthMode(fs, *auth, *authMode)
+	if !ok {
 		return 2
 	}
 	// Validate required flags BEFORE touching the YAML, so a mistyped command
@@ -299,7 +306,7 @@ func cmdAdd(repoRoot, cfgPath string, args []string) int {
 		errf("Unknown host %q — defined hosts: %s.", *host, strings.Join(sortedKeysOf(cfg.Hosts), ", "))
 		return 1
 	}
-	cfg.Services[name] = config.Service{FQDN: *fqdn, Host: *host, Backend: *backend, Auth: *auth}
+	cfg.Services[name] = config.Service{FQDN: *fqdn, Host: *host, Backend: *backend, Auth: mode}
 	if err := cfg.Save(); err != nil {
 		errf("%v", err)
 		return 1
@@ -330,10 +337,26 @@ func syncBlockedReason(cfg *config.Config) string {
 //   - auth_service names a service that doesn't exist.
 //   - fully configured but no service opted in (auth: true): a gentle note that
 //     nothing is actually protected yet.
-func authConfigWarnings(cfg *config.Config) []string {
+//   - For each auth: oidc service, splitdns verifies (read-only) that an Authelia
+//     OIDC client registers a redirect_uri for the service. It does NOT configure
+//     OIDC — client registration and app env are out of scope.
+//
+// repoRoot is needed to locate the Authelia config for the OIDC checks.
+func authConfigWarnings(repoRoot string, cfg *config.Config) []string {
 	var w []string
 	snippet := cfg.Defaults.AuthSnippet != ""
 	service := cfg.Defaults.AuthService != ""
+
+	anyForward := false
+	anyOIDC := false
+	for _, s := range cfg.Services {
+		switch s.Auth {
+		case config.AuthForward:
+			anyForward = true
+		case config.AuthOIDC:
+			anyOIDC = true
+		}
+	}
 
 	if snippet && !service {
 		w = append(w, "auth_snippet is set but auth_service is not — post-login redirects will loop back to the auth portal. Name the auth backend with: splitdns set auth-service <name>")
@@ -346,19 +369,137 @@ func authConfigWarnings(cfg *config.Config) []string {
 			w = append(w, fmt.Sprintf("auth_service %q is not a defined service.", cfg.Defaults.AuthService))
 		}
 	}
-	if snippet && service {
-		used := false
-		for _, s := range cfg.Services {
-			if s.Auth {
-				used = true
+	if snippet && service && !anyForward {
+		w = append(w, "the auth snippet is configured but no service uses forward auth — opt one in with: splitdns update service <name> --auth-mode forward")
+	}
+
+	// OIDC client-existence checks (read-only; never writes the Authelia config).
+	if anyOIDC {
+		w = append(w, oidcClientWarnings(repoRoot, cfg)...)
+	}
+	return w
+}
+
+// oidcClientWarnings verifies, read-only, that each auth: oidc service has an
+// Authelia OIDC client registering a redirect_uri under
+// https://<fqdn>/accounts/oidc/. It locates the Authelia config at
+// <repoRoot>/<auth_service host dir>/authelia/data/config/configuration.yml.
+// A missing/unparseable file is a soft advisory (report-but-proceed), not a hard
+// failure — splitdns validates OIDC but does not own it.
+func oidcClientWarnings(repoRoot string, cfg *config.Config) []string {
+	var w []string
+	var oidcSvcs []string
+	for name, s := range cfg.Services {
+		if s.Auth == config.AuthOIDC {
+			oidcSvcs = append(oidcSvcs, name)
+		}
+	}
+	sort.Strings(oidcSvcs)
+
+	if cfg.Defaults.AuthService == "" {
+		return append(w, "OIDC clients can't be verified (auth_service not set) — set the Authelia service with: splitdns set auth-service <name>")
+	}
+	authSvc, ok := cfg.Services[cfg.Defaults.AuthService]
+	if !ok {
+		// Already flagged as a non-existent auth_service above; can't locate config.
+		return w
+	}
+	hostM, ok := cfg.Hosts[authSvc.Host]
+	if !ok {
+		return w
+	}
+	cfgPath := filepath.Join(repoRoot, hostM.ResolvedDir(authSvc.Host), config.DefaultAutheliaConfig)
+	redirects, err := readOIDCRedirectURIs(cfgPath)
+	if err != nil {
+		for _, name := range oidcSvcs {
+			w = append(w, fmt.Sprintf("could not verify OIDC client for %s: %v", name, err))
+		}
+		return w
+	}
+	for _, name := range oidcSvcs {
+		fqdn := cfg.Services[name].FQDN
+		want := fmt.Sprintf("https://%s/accounts/oidc/", fqdn)
+		matched := false
+		for _, uri := range redirects {
+			if strings.Contains(uri, want) {
+				matched = true
 				break
 			}
 		}
-		if !used {
-			w = append(w, "the auth snippet is configured but no service uses it — opt one in with: splitdns update service <name> --auth")
+		if !matched {
+			w = append(w, fmt.Sprintf("service %s is auth: oidc but no Authelia OIDC client registers a redirect_uri for %s — register the client in %s.", name, want, cfgPath))
 		}
 	}
 	return w
+}
+
+// readOIDCRedirectURIs reads an Authelia configuration.yml (read-only) and
+// returns every redirect_uri under identity_providers.oidc.clients[]. A read or
+// parse error is returned so callers can emit a soft advisory.
+func readOIDCRedirectURIs(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		IdentityProviders struct {
+			OIDC struct {
+				Clients []struct {
+					RedirectURIs []string `yaml:"redirect_uris"`
+				} `yaml:"clients"`
+			} `yaml:"oidc"`
+		} `yaml:"identity_providers"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", filepath.Base(path), err)
+	}
+	var out []string
+	for _, c := range doc.IdentityProviders.OIDC.Clients {
+		out = append(out, c.RedirectURIs...)
+	}
+	return out, nil
+}
+
+// resolveAuthMode reconciles the two auth flags into a single AuthMode.
+// --auth is a back-compat shorthand for --auth-mode forward; --auth-mode takes
+// forward|oidc|none. Passing both is allowed only if they agree. An invalid
+// --auth-mode value is a usage error (returns ok=false; caller exits 2).
+func resolveAuthMode(fs *flag.FlagSet, auth bool, authMode string) (config.AuthMode, bool) {
+	authSet, modeSet := false, false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "auth":
+			authSet = true
+		case "auth-mode":
+			modeSet = true
+		}
+	})
+	var mode config.AuthMode
+	if modeSet {
+		switch authMode {
+		case "forward":
+			mode = config.AuthForward
+		case "oidc":
+			mode = config.AuthOIDC
+		case "none", "":
+			mode = config.AuthNone
+		default:
+			errf("Invalid --auth-mode %q — expected forward, oidc, or none.", authMode)
+			return "", false
+		}
+	}
+	if authSet {
+		shorthand := config.AuthNone
+		if auth {
+			shorthand = config.AuthForward
+		}
+		if modeSet && mode != shorthand {
+			errf("Conflicting flags: --auth and --auth-mode disagree.")
+			return "", false
+		}
+		mode = shorthand
+	}
+	return mode, true
 }
 
 func cmdUpdate(repoRoot, cfgPath string, args []string) int {
@@ -375,7 +516,8 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	fs.StringVar(host, "H", "", "alias for --host")
 	backend := fs.String("backend", "", "reverse_proxy upstream name:port")
 	fs.StringVar(backend, "b", "", "alias for --backend")
-	auth := fs.Bool("auth", false, "put this service behind the (auth) snippet")
+	auth := fs.Bool("auth", false, "shorthand for --auth-mode forward (--auth=false clears)")
+	authMode := fs.String("auth-mode", "", "auth mode: forward|oidc|none")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -385,7 +527,12 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	fs.Visit(func(*flag.Flag) { changed++ })
 	if changed == 0 {
 		errf("Nothing to change for %q.", name)
-		hint("Pass at least one of --fqdn, --host, or --backend.")
+		hint("Pass at least one of --fqdn, --host, --backend, or --auth-mode.")
+		return 2
+	}
+	// Validate --auth/--auth-mode up front (usage error before touching YAML).
+	newMode, ok := resolveAuthMode(fs, *auth, *authMode)
+	if !ok {
 		return 2
 	}
 
@@ -407,8 +554,9 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 			svc.Host = *host
 		case "backend":
 			svc.Backend = *backend
-		case "auth":
-			svc.Auth = *auth
+		case "auth", "auth-mode":
+			// Both flags resolve to newMode (resolveAuthMode rejects conflicts).
+			svc.Auth = newMode
 		}
 	})
 	cfg.Services[name] = svc
@@ -575,7 +723,7 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 	if len(cfg.Domains) == 0 {
 		fmt.Println("Note: no domains defined — run 'splitdns add domain <name>' (a service's fqdn must match a domain).")
 	}
-	for _, msg := range authConfigWarnings(cfg) {
+	for _, msg := range authConfigWarnings(repoRoot, cfg) {
 		fmt.Printf("%s %s\n", warn, msg)
 	}
 
@@ -787,8 +935,8 @@ services.yaml. Operates on ~/docker by default; -C <dir> overrides.
 Commands are verb-first: <verb> <noun> <args>.
 
 Services (an app reached at an fqdn, on a host, under a domain):
-  splitdns add     service <name> --fqdn <f> --host <h> --backend <b> [--auth]
-  splitdns update  service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth[=false]]
+  splitdns add     service <name> --fqdn <f> --host <h> --backend <b> [--auth-mode forward|oidc]
+  splitdns update  service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth-mode forward|oidc|none]
   splitdns remove  service <name>
   splitdns disable service <name>   Stop generating DNS/Caddy config for a service (keeps it in services.yaml).
   splitdns enable  service <name>   Re-enable a disabled service (regenerates its files).

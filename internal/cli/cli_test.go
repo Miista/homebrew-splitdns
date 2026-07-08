@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"splitdns/internal/config"
 )
 
 // mkdirs creates host directories inside the temp repo so `host add` (which
@@ -388,8 +390,67 @@ func TestRun_AuthConfigWarnings(t *testing.T) {
 	Run([]string{"-C", dir2, "set", "auth-snippet", "snip.caddy"})
 	Run([]string{"-C", dir2, "set", "auth-service", "authelia"})
 	out2 := captureStdout(t, func() { Run([]string{"-C", dir2, "list", "--all"}) })
-	if !contains(out2, "no service uses it") {
+	if !contains(out2, "no service uses forward auth") {
 		t.Errorf("expected unused-auth note when nothing opted in:\n%s", out2)
+	}
+}
+
+// An auth: oidc service with no matching Authelia OIDC client warns; adding the
+// client (a redirect_uri under https://<fqdn>/accounts/oidc/) clears it.
+func TestRun_OIDCClientWarning(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	// The auth_service (authelia) runs on appbox; its config lives under appbox.
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
+	Run([]string{"-C", dir, "set", "auth-service", "authelia"})
+	Run([]string{"-C", dir, "add", "service", "app", "--fqdn", "app.example.com", "--host", "appbox", "--backend", "app:3000", "--auth-mode", "oidc"})
+
+	// No Authelia config yet → soft advisory ("could not verify").
+	out := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
+	if !contains(out, "could not verify OIDC client for app") {
+		t.Errorf("expected soft advisory when Authelia config missing:\n%s", out)
+	}
+
+	// Authelia config present but no client for app → hard warning.
+	acfg := filepath.Join(dir, "appbox", config.DefaultAutheliaConfig)
+	os.MkdirAll(filepath.Dir(acfg), 0o755)
+	os.WriteFile(acfg, []byte("identity_providers:\n  oidc:\n    clients:\n      - client_id: other\n        redirect_uris:\n          - https://other.example.com/accounts/oidc/callback\n"), 0o644)
+	out2 := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
+	if !contains(out2, "no Authelia OIDC client registers a redirect_uri for https://app.example.com/accounts/oidc/") {
+		t.Errorf("expected unregistered-client warning:\n%s", out2)
+	}
+
+	// Add the matching client → warning clears.
+	os.WriteFile(acfg, []byte("identity_providers:\n  oidc:\n    clients:\n      - client_id: app\n        redirect_uris:\n          - https://app.example.com/accounts/oidc/callback\n"), 0o644)
+	out3 := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
+	if contains(out3, "auth: oidc but no Authelia") || contains(out3, "could not verify") {
+		t.Errorf("warning should clear once the client is registered:\n%s", out3)
+	}
+}
+
+// --auth-mode validates its value; an invalid mode is a usage error (exit 2).
+func TestRun_AuthModeInvalid(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	code := Run([]string{"-C", dir, "add", "service", "x", "--fqdn", "x.example.com", "--host", "appbox", "--backend", "x:1", "--auth-mode", "bogus"})
+	if code != 2 {
+		t.Errorf("invalid --auth-mode should exit 2, got %d", code)
+	}
+}
+
+// --auth back-compat: shorthand for forward, persisted as `auth: forward`.
+func TestRun_AuthShorthandForward(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	if code := Run([]string{"-C", dir, "add", "service", "x", "--fqdn", "x.example.com", "--host", "appbox", "--backend", "x:1", "--auth"}); code != 0 {
+		t.Fatalf("add --auth exit %d", code)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, configName))
+	if !contains(string(b), "auth: forward") {
+		t.Errorf("--auth should persist as forward:\n%s", b)
 	}
 }
 

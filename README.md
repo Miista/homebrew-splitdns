@@ -108,7 +108,9 @@ splitdns add service docs --fqdn docs.example.com --host appbox --backend paperl
 # 5. (optional) Put services behind the (auth) snippet
 #    Point at a Caddy file containing any auth directive (forward_auth, basic_auth, …), then opt services in.
 splitdns set auth-snippet auth-snippet.caddy
-splitdns update service docs --auth
+splitdns update service docs --auth-mode forward
+#    Or, for an app that does OIDC itself (splitdns adds no gate, only validates the client):
+splitdns update service app --auth-mode oidc
 
 # 6. Re-generate everything any time (e.g. after a git pull)
 splitdns sync
@@ -136,9 +138,41 @@ Note the A record points at the **service host** IP (`appbox`), while the file i
 the **resolver host** (`resolver`) directory. The `address=/<fqdn>/::` line always suppresses the public
 AAAA record so IPv6-preferring clients can't bypass split-horizon.
 
-## Forward auth (optional)
+## Auth (optional)
 
-The `(auth)` snippet mechanism is **generic** — its body can be any Caddy auth directive
+Each service records **how** it authenticates via an auth **mode**, set with
+`--auth-mode <mode>` on `add`/`update service` (or the back-compat `--auth`, which means
+`forward`):
+
+| Mode | services.yaml | Caddy rendered | splitdns's role |
+|------|---------------|----------------|-----------------|
+| `none` (default) | *(omitted)* | plain `reverse_proxy` | nothing |
+| `forward` | `auth: forward` | `import auth` before `reverse_proxy` | adds the forward-auth gate (the `(auth)` snippet) |
+| `oidc` | `auth: oidc` | **plain** `reverse_proxy` (no `import auth`) | adds **no** gate; the app speaks OIDC itself. splitdns only **validates** (read-only) that an Authelia OIDC client exists |
+
+`oidc` renders a plain `reverse_proxy` — identical to `none` in Caddy — because the app
+performs the OIDC flow itself; splitdns must not add a second (forward-auth) gate in front of
+it. Recording the mode as `oidc` (rather than leaving it `none`) keeps the intent legible: the
+`list` `AUTH` column and services.yaml show `oidc`, so a protected service never looks like an
+unprotected one.
+
+The `AUTH` column in `splitdns list` shows the mode (`forward` / `oidc` / `-`).
+
+**Back-compat:** a legacy `auth: true` in services.yaml still parses (as `forward`) and is
+re-emitted as `auth: forward` on the next mutation; `auth: false`/absent = `none`.
+
+**OIDC validation (read-only, splitdns does NOT configure OIDC).** For each `auth: oidc`
+service, splitdns reads the Authelia config at
+`<auth_service host dir>/authelia/data/config/configuration.yml` and checks that some
+`identity_providers.oidc.clients[].redirect_uris` entry contains
+`https://<fqdn>/accounts/oidc/`. If none does, it warns; if the config is missing/unparseable
+it emits a softer advisory and proceeds (report-but-proceed). splitdns never writes that file —
+**registering the OIDC client and configuring the app's OIDC env are out of scope.** If
+`auth_service` is unset, it notes that OIDC clients can't be verified.
+
+### Forward auth
+
+The `(auth)` snippet mechanism (used by `auth: forward`) is **generic** — its body can be any Caddy auth directive
 (`basic_auth`, a JWT check, an IP allowlist, …); splitdns copies it verbatim and is agnostic to
 its contents. This section works through the common case: putting services behind a
 [Caddy `forward_auth`](https://caddyserver.com/docs/caddyfile/directives/forward_auth)
@@ -151,17 +185,17 @@ substitution-free snippet for the whole fleet:
   `(auth)` and imported before the site blocks. Because the target is a **public FQDN**
   (e.g. `https://auth.example.com`) resolved by your split-horizon DNS, the same snippet is
   byte-identical on every host — no per-host substitution.
-- **`--auth`** on `add`/`update service` sets `auth: true`, which emits `import auth` in that
-  service's site block (before `reverse_proxy`, so the auth check runs first). Only opted-in
-  services are protected.
+- **`--auth-mode forward`** (or the shorthand `--auth`) on `add`/`update service` sets
+  `auth: forward`, which emits `import auth` in that service's site block (before
+  `reverse_proxy`, so the auth check runs first). Only opted-in services are protected.
 - The `(auth)` file is **always generated** — an empty `(auth) {}` no-op stub when no snippet is
   set — so toggling auth never rewrites site blocks, and `doctor` tracks it as an ordinary
   generated file (it flags drift if you edit the source without re-syncing).
 - If the configured `auth_snippet` source is **missing/unreadable at sync time**, splitdns keeps
   the last-good generated file (warns, exits non-zero) rather than silently resetting to the empty
   stub — a path typo can never disable auth fleet-wide.
-- A service whose own fqdn is referenced by the snippet (i.e. it **is** the auth backend) is
-  refused `--auth`, preventing a redirect loop.
+- A service that **is** the auth backend (`defaults.auth_service`) is refused any auth mode
+  (forward or oidc), preventing a redirect loop — the portal must be reachable un-gated.
 
 Given `auth-snippet.caddy`:
 

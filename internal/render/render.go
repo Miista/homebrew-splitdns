@@ -5,6 +5,8 @@ package render
 import (
 	"fmt"
 	"strings"
+
+	"splitdns/internal/config"
 )
 
 // Header marks generated files. Identical across both output types.
@@ -96,15 +98,23 @@ func DNSRecord(fqdn, hostIP string) string {
 
 // CaddySite renders the Caddy site block for a service. tlsImport is the
 // snippet name (e.g. tls_example_com); backend is emitted verbatim as the
-// reverse_proxy upstream (design §4.2). When auth is true, the site imports the
-// (auth) snippet before proxying — placed before reverse_proxy so
-// Caddy runs the auth check first and only proxies on success. When authBackend
-// is true (this service is the forward-auth portal), the reverse_proxy also
-// preserves the inbound X-Forwarded-Host so post-login redirects target the
-// original service, not the portal.
-func CaddySite(fqdn, tlsImport, backend string, auth, authBackend bool) string {
+// reverse_proxy upstream (design §4.2).
+//
+// The auth mode decides what gate (if any) is emitted before reverse_proxy:
+//   - AuthForward imports the (auth) snippet before proxying, so Caddy runs the
+//     forward-auth check first and only proxies on success.
+//   - AuthOIDC and AuthNone both render a PLAIN reverse_proxy (no import auth):
+//     an oidc app authenticates itself, so splitdns adds no Caddy-level gate.
+//     Keeping oidc distinct from forward in config while both may render plainly
+//     is the point — the mode is recorded even though the Caddy output for oidc
+//     matches a plain service.
+//
+// authBackend is orthogonal to the mode: when true (this service is the
+// forward-auth portal) the reverse_proxy preserves the inbound X-Forwarded-Host
+// so post-login redirects target the original service, not the portal.
+func CaddySite(fqdn, tlsImport, backend string, mode config.AuthMode, authBackend bool) string {
 	authLine := ""
-	if auth {
+	if mode == config.AuthForward {
 		authLine = fmt.Sprintf("\timport %s\n", AuthSnippetName)
 	}
 	// The forward-auth backend (e.g. an Authelia portal) must preserve the inbound

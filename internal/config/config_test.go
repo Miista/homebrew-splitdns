@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -142,6 +143,86 @@ func TestServicesUsingDomain(t *testing.T) {
 	}
 	if got := c.ServicesUsingDomain("unused.net"); len(got) != 0 {
 		t.Errorf("unused domain should have no users: %v", got)
+	}
+}
+
+// Auth mode parsing: legacy bool (true→forward, false→none), string forms
+// (forward/oidc/none), absent (none), and invalid (none + error).
+func TestAuthMode_Parse(t *testing.T) {
+	load := func(t *testing.T, authLine string) (Service, error) {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "services.yaml")
+		body := "hosts: {}\ndomains: []\ndefaults: {}\nservices:\n  s:\n    fqdn: s.example.com\n    host: h\n    backend: x:1\n"
+		if authLine != "" {
+			body += "    auth: " + authLine + "\n"
+		}
+		write(t, path, body)
+		c, err := Load(path)
+		if err != nil {
+			return Service{}, err
+		}
+		return c.Services["s"], nil
+	}
+	cases := []struct {
+		name, line string
+		want       AuthMode
+		wantErr    bool
+	}{
+		{"legacy true", "true", AuthForward, false},
+		{"legacy false", "false", AuthNone, false},
+		{"absent", "", AuthNone, false},
+		{"forward", "forward", AuthForward, false},
+		{"oidc", "oidc", AuthOIDC, false},
+		{"none string", "none", AuthNone, false},
+		{"invalid", "bogus", AuthNone, true}, // documented: invalid → none + error
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, err := load(t, tc.line)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected parse error for %q", tc.line)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if svc.Auth != tc.want {
+				t.Errorf("auth %q → %q, want %q", tc.line, svc.Auth, tc.want)
+			}
+		})
+	}
+}
+
+// A legacy `auth: true` must READ as forward and, on Save, re-emit the string
+// form (auth: forward), while none is omitted entirely.
+func TestAuthMode_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "services.yaml")
+	write(t, path, "hosts: {}\ndomains: []\ndefaults: {}\nservices:\n  legacy:\n    fqdn: a.example.com\n    host: h\n    backend: x:1\n    auth: true\n  plain:\n    fqdn: b.example.com\n    host: h\n    backend: x:1\n  odc:\n    fqdn: c.example.com\n    host: h\n    backend: x:1\n    auth: oidc\n")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Services["legacy"].Auth != AuthForward {
+		t.Errorf("legacy true should read as forward, got %q", c.Services["legacy"].Auth)
+	}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	s := string(b)
+	if !strings.Contains(s, "auth: forward") {
+		t.Errorf("legacy true should re-emit as 'auth: forward':\n%s", s)
+	}
+	if !strings.Contains(s, "auth: oidc") {
+		t.Errorf("oidc should serialize as 'auth: oidc':\n%s", s)
+	}
+	// none is omitted (omitempty).
+	if strings.Contains(s, "auth: none") || strings.Contains(s, "auth: false") {
+		t.Errorf("none auth should be omitted, not emitted:\n%s", s)
 	}
 }
 

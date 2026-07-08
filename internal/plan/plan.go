@@ -205,9 +205,10 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 		return nil, fmt.Sprintf("backend %q is not name:port shape", svc.Backend)
 	}
 	// Loop guard: the service that IS the forward-auth backend (defaults.
-	// auth_service, e.g. an Authelia portal) must not also be protected by it, or
-	// every auth subrequest would recurse through the portal.
-	if svc.Auth && name == c.Defaults.AuthService {
+	// auth_service, e.g. an Authelia portal) must not also be protected by any
+	// auth mode, or every auth subrequest would recurse through the portal.
+	// Applies to both forward and oidc — the backend must be reachable un-gated.
+	if svc.Auth != config.AuthNone && name == c.Defaults.AuthService {
 		return nil, fmt.Sprintf("auth refused: %q is the auth_service (the forward-auth backend) — protecting it would create a redirect loop", name)
 	}
 
@@ -217,6 +218,7 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 	return []File{
 		{Path: dnsPath, Content: render.DNSRecord(svc.FQDN, hostM.IP)},
 		{Path: caddyPath, Content: render.CaddySite(svc.FQDN, tlsImport, svc.Backend, svc.Auth, name == c.Defaults.AuthService)},
+		// NOTE: svc.Auth is now an AuthMode; forward → import auth, oidc/none → plain.
 	}, ""
 }
 

@@ -57,8 +57,8 @@ func listSetup(t *testing.T, snippet string) string {
 	return dir
 }
 
-// The AUTH column shows ✓ for an auth service and - for a non-auth one, and the
-// disable hint appears because at least one service uses auth.
+// The AUTH column shows the mode (forward) for an auth service and - for a
+// non-auth one, and the hint appears because at least one service uses auth.
 func TestList_AuthColumn(t *testing.T) {
 	dir := listSetup(t, "snip.caddy")
 	out := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
@@ -67,7 +67,7 @@ func TestList_AuthColumn(t *testing.T) {
 	if !strings.Contains(out, "AUTH") {
 		t.Errorf("expected AUTH header column, got:\n%s", out)
 	}
-	// Find the two service rows and assert their trailing auth glyph.
+	// Find the two service rows and assert their trailing auth mode.
 	var docsLine, blogLine string
 	for _, ln := range strings.Split(out, "\n") {
 		if strings.Contains(ln, "docs.example.com") {
@@ -80,14 +80,44 @@ func TestList_AuthColumn(t *testing.T) {
 	if docsLine == "" || blogLine == "" {
 		t.Fatalf("missing service rows in:\n%s", out)
 	}
-	if !strings.HasSuffix(strings.TrimRight(docsLine, " "), "✓") {
-		t.Errorf("auth service row should end in ✓, got %q", docsLine)
+	if !strings.HasSuffix(strings.TrimRight(docsLine, " "), "forward") {
+		t.Errorf("auth service row should end in forward, got %q", docsLine)
 	}
 	if !strings.HasSuffix(strings.TrimRight(blogLine, " "), "-") {
 		t.Errorf("non-auth service row should end in -, got %q", blogLine)
 	}
-	if !strings.Contains(out, "imports the auth snippet") {
-		t.Errorf("expected the disable hint when a service uses auth, got:\n%s", out)
+	if !strings.Contains(out, "imports the (auth) snippet") {
+		t.Errorf("expected the auth hint when a service uses auth, got:\n%s", out)
+	}
+}
+
+// oidc renders a PLAIN reverse_proxy (no import auth) and the list AUTH column
+// shows "oidc".
+func TestList_OIDCColumn(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	if code := Run([]string{"-C", dir, "add", "service", "app",
+		"--fqdn", "app.example.com", "--host", "appbox", "--backend", "app:3000", "--auth-mode", "oidc"}); code != 0 {
+		t.Fatalf("add oidc service exit %d", code)
+	}
+	out := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
+	var line string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "app.example.com") {
+			line = ln
+		}
+	}
+	if !strings.HasSuffix(strings.TrimRight(line, " "), "oidc") {
+		t.Errorf("oidc service row should end in oidc, got %q", line)
+	}
+	// The generated Caddy site must be a plain reverse_proxy (no import auth).
+	b, err := os.ReadFile(filepath.Join(dir, "appbox", "caddy", "data", "sites", "app.caddy"))
+	if err != nil {
+		t.Fatalf("read site: %v", err)
+	}
+	if strings.Contains(string(b), "import auth") {
+		t.Errorf("oidc site must not import auth:\n%s", b)
 	}
 }
 

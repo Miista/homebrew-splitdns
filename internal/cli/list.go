@@ -92,19 +92,20 @@ func cmdList(cfgPath string, args []string) int {
 		fmt.Printf("  (%d on other hosts hidden — use --all to show)\n", len(cfg.Services)-len(svcNames))
 	}
 
-	for _, msg := range authConfigWarnings(cfg) {
+	repoRoot := filepath.Dir(cfgPath)
+	for _, msg := range authConfigWarnings(repoRoot, cfg) {
 		fmt.Printf("%s %s\n", warn, msg)
 	}
 
-	repoRoot := filepath.Dir(cfgPath)
 	reportDrift(detectDrift(repoRoot, cfg, loadManifest(repoRoot, cfg)))
 	return 0
 }
 
 // printServiceTable renders the services as an aligned table with an AUTH
-// column. Column widths are computed from the data (including headers) so it
-// stays aligned regardless of name/fqdn lengths. Disabled services are marked
-// in a trailing note column. When nothing is selected, prints a placeholder.
+// column showing the auth MODE (forward/oidc/-). Column widths are computed from
+// the data (including headers) so it stays aligned regardless of name/fqdn
+// lengths. Disabled services are marked in a trailing note column. When nothing
+// is selected, prints a placeholder.
 func printServiceTable(cfg *config.Config, svcNames []string) {
 	if len(svcNames) == 0 {
 		fmt.Println("  (none)")
@@ -116,8 +117,8 @@ func printServiceTable(cfg *config.Config, svcNames []string) {
 	for _, name := range svcNames {
 		svc := cfg.Services[name]
 		auth := "-"
-		if svc.Auth {
-			auth = "✓"
+		if svc.Auth != config.AuthNone {
+			auth = string(svc.Auth)
 			anyAuth = true
 		}
 		note := ""
@@ -127,7 +128,7 @@ func printServiceTable(cfg *config.Config, svcNames []string) {
 		rows = append(rows, row{name, svc.FQDN, svc.Host, svc.Backend, auth, note})
 	}
 
-	// Header + width computation. AUTH holds either "✓" or "-", both width 1.
+	// Header + width computation. AUTH holds "forward"/"oidc"/"-".
 	hName, hFQDN, hHost, hBack, hAuth := "NAME", "FQDN", "HOST", "BACKEND", "AUTH"
 	wName, wFQDN, wHost, wBack := len(hName), len(hFQDN), len(hHost), len(hBack)
 	for _, r := range rows {
@@ -148,7 +149,7 @@ func printServiceTable(cfg *config.Config, svcNames []string) {
 		fmt.Println(line)
 	}
 	if anyAuth {
-		fmt.Println("  (✓ = imports the auth snippet; disable with 'splitdns update service <name> --auth=false')")
+		fmt.Println("  (AUTH: forward = imports the (auth) snippet; oidc = app does OIDC itself, no Caddy gate; change with 'splitdns update service <name> --auth-mode <mode>')")
 	}
 }
 
