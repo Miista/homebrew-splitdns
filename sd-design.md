@@ -79,7 +79,7 @@ services:
     host: optiplex                    # machine that runs the service; Caddy site block goes in its dir
     backend: paperless:8000
     # disabled: true                  # optional; see §6.1 (enable/disable)
-    # auth: true                      # optional; import the (auth) snippet — §4.5
+    # auth: forward                   # optional auth mode: forward|oidc (or legacy true=forward) — §4.5
 ```
 
 Notes:
@@ -143,8 +143,10 @@ docs.example.com {
 - `backend` is emitted verbatim as the `reverse_proxy` upstream. It is expected to be a Docker
   network reference (`container:port`) resolvable on the serving machine's Docker network — not
   a LAN IP. The tool validates only shape (`^[A-Za-z0-9._-]+:[0-9]+$`), not reachability.
-- When the service sets `auth: true` (§4.5), an `import auth` line is emitted **before**
-  `reverse_proxy`, so Caddy runs the auth check first and only proxies on success:
+- A service's **auth mode** (`auth:`, §4.5) decides the gate. It is one of `forward`, `oidc`,
+  or none (unset). Legacy `auth: true` still parses as `forward` and is re-emitted as the string
+  form. When the mode is `forward`, an `import auth` line is emitted **before** `reverse_proxy`,
+  so Caddy runs the forward-auth check first and only proxies on success:
   ```
   docs.example.com {
   	import tls_example_com
@@ -152,6 +154,10 @@ docs.example.com {
   	reverse_proxy paperless:8000
   }
   ```
+  When the mode is `oidc` (or none), a **plain** `reverse_proxy` is emitted with **no** `import
+  auth`: an OIDC app performs the login flow itself, so splitdns must add no second gate in front
+  of it. `oidc` renders identically to a no-auth service in Caddy on purpose — the mode is still
+  recorded in `services.yaml` so the protection intent stays legible (it is not silently "none").
 - When the service **is** the auth backend (`name == defaults.auth_service`, §4.5), its
   `reverse_proxy` additionally preserves the inbound `X-Forwarded-Host`:
   ```
@@ -255,15 +261,30 @@ forward-auth portal (parallels `dns_host`: one repo-wide role, named by service,
 `splitdns set auth-service <name>`, `-` clears). That service's site block gets the
 `X-Forwarded-Host` preservation described in §4.2.
 
-**Loop guard** (§7): a service with `auth: true` **and** `name == defaults.auth_service` is
-refused and skipped — protecting the portal with itself would recurse every auth subrequest.
+**Loop guard** (§7): a service with a non-none auth mode **and** `name == defaults.auth_service`
+is refused and skipped — protecting the portal with itself would recurse every auth subrequest.
 (The guard keys on the service name, not on parsing the opaque snippet body.)
+
+**Auth modes.** A service's `auth:` is a mode, not a bool (§4.2): `forward` imports the `(auth)`
+snippet; `oidc` renders a plain `reverse_proxy` (the app does OIDC itself, splitdns adds no gate);
+none/unset is unprotected. Legacy `auth: true` is read as `forward` and re-emitted as the string
+form. The mode is what makes an OIDC service's protection legible despite rendering plain Caddy.
+
+**OIDC client validation (read-only).** For each `auth: oidc` service, splitdns reads the Authelia
+config at `<auth_service host dir>/authelia/data/config/configuration.yml` (fixed path convention,
+`config.DefaultAutheliaConfig`; host derived from `defaults.auth_service`) and checks that some
+`identity_providers.oidc.clients[].redirect_uris` entry contains `https://<fqdn>/accounts/oidc/`.
+Missing → warn with the URI to register; config absent/unparseable → softer advisory; both
+report-but-proceed. splitdns **never writes** the Authelia config — registering the OIDC client and
+configuring the app's OIDC env are out of scope (the same internal-horizon boundary as §12). The
+match is deliberately loose (fqdn + the `/accounts/oidc/` literal) because the allauth `provider_id`
+segment is app-side and unknown to splitdns.
 
 **Half-configured warnings** (`authConfigWarnings`, non-fatal, printed after a reconcile):
 `auth_snippet` set but no `auth_service` (redirect-loop risk); `auth_service` set but no
 `auth_snippet` (the `(auth)` block is a no-op stub); `auth_service` names a non-existent service;
-or fully configured but no service opted in. These are advisories — forward-auth still functions
-around them — so they warn, they don't block.
+fully configured but no service opted in; plus the OIDC advisories above. These are advisories —
+auth still functions around them — so they warn, they don't block.
 
 ## 5. Manifest
 
@@ -468,7 +489,7 @@ stopping:
 - `backend` matches `name:port` shape (else skip).
 - `fqdn` is unique across services (collision → **both** conflicting entries skipped, reported).
 - generated output paths are unique among survivors (path collision → skipped, reported).
-- **auth loop guard**: a service with `auth: true` whose name equals `defaults.auth_service` is
+- **auth loop guard**: a service with a non-none auth mode whose name equals `defaults.auth_service` is
   refused and skipped — protecting the auth backend with itself creates a redirect loop (§4.5).
 
 Disabled services are skipped with reason `"disabled"` and reported separately (not as errors).
