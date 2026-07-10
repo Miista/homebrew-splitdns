@@ -42,7 +42,15 @@ jobs:
       # (guldmund/stable). Each tool pushes only its own artifacts; Cloudsmith
       # indexes and signs the repo server-side, so there is no shared build job.
       # Two-step raw API per file: PUT the binary (returns an identifier), then
-      # POST to finalize it as a deb under the distro-agnostic any-distro track.
+      # POST to finalize it as a deb under debian/any-version.
+      #
+      # distribution MUST be debian/any-version, NOT any-distro/any-version:
+      # Cloudsmith accepts an "any-distro" upload but does not publish an apt
+      # index under deb/any-distro/ (clients 404 on the Release file). It only
+      # serves under real distro slugs. debian/any-version is codename-agnostic,
+      # so one upload installs on any Debian/Raspbian/Ubuntu client. The client
+      # source line is correspondingly:
+      #   deb [...] https://dl.cloudsmith.io/public/guldmund/stable/deb/debian any-version main
       - name: Publish debs to Cloudsmith
         env:
           CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
@@ -59,7 +67,7 @@ jobs:
             curl -fsSL -X POST \
               -H "X-Api-Key: $CLOUDSMITH_API_KEY" \
               -H "Content-Type: application/json" \
-              -d "{\"package_file\":\"$id\",\"distribution\":\"any-distro/any-version\"}" \
+              -d "{\"package_file\":\"$id\",\"distribution\":\"debian/any-version\"}" \
               "https://api.cloudsmith.io/v1/packages/guldmund/stable/upload/deb/" \
               > /dev/null
             echo "  published $(basename "$deb")"
