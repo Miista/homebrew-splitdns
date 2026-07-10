@@ -53,6 +53,30 @@ nfpms:
 checksum:
   name_template: checksums.txt
 
+changelog:
+  use: git
+  sort: asc
+  # Drop noise that isn't a user-facing change: version/chore bumps, docs,
+  # tests, CI, and the automated Homebrew formula commit goreleaser itself
+  # pushes each release.
+  filters:
+    exclude:
+      - "^chore:"
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^Brew formula update"
+      - "^Merge "
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?:'
+      order: 0
+    - title: Bug fixes
+      regexp: '^fix(\(.+\))?:'
+      order: 1
+    - title: Others
+      order: 999
+
 brews:
   - name: splitdns
     repository:
