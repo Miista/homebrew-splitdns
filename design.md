@@ -768,3 +768,21 @@ where `<host-dir>` is the host's `ResolvedDir` (its `dir:` or, by convention, it
   yet be publicly broken because the `cloudflare.io/hostname` label is missing — the FQDN then
   falls back to the zone apex publicly (e.g. `auth.palmund.net` → `palmund.net`). The label is a
   manual, per-service step that lives with the compose file, not with hemma.
+
+- **No writing of the users database — deferred, designed (July 2026).** User→group membership
+  (`users_database.yml`) is read-only to hemma today: `list` joins it, `doctor` cross-checks it,
+  `create user` prints a snippet but never writes. A `hemma update user <name> --groups a,b`
+  was considered and **deferred, not rejected** — the boundary rationale and the design are
+  recorded here so the decision isn't relitigated from scratch:
+  - *Why it would be legitimate*: group membership is authorization data — the same domain hemma
+    already owns on the service side (`auth.groups`). Passwords/emails are identity data and stay
+    human-owned regardless. The line would move to "hemma manages authorization end-to-end;
+    humans manage identity."
+  - *Why deferred*: the users db is a live, secret-bearing, non-git file. A second writer on it
+    has no `git diff` safety net and a bad write locks real logins out. At the current household
+    scale the feature saves a one-line hand edit a few times a year.
+  - *The design, if/when scale justifies it*: a provider-interface operation performing a
+    **surgical node-level YAML edit** (yaml.v3 node API) that touches only the target user's
+    `groups` key — preserving comments, ordering, unknown fields, and hashes byte-for-byte —
+    with an atomic write plus `.bak`, refusal on unknown users, and activation via the existing
+    `apply` (validate-before-restart) path. Never wholesale rewrite; never any other key.
