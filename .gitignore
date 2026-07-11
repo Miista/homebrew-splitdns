@@ -2,6 +2,7 @@
 /shd
 /mirage
 /splitdns
+/hemma
 
 # Never commit built binaries — use goreleaser / deploy.sh / apt.
 *-linux-amd64
