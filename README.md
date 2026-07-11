@@ -1,15 +1,20 @@
-# splitdns — Split-Horizon DNS (Manager)
+# hemma — homelab DNS, Caddy, and auth config manager
 
-A small Go CLI that generates **split-horizon DNS records** (Pi-hole / dnsmasq) and
-**reverse-proxy site blocks** (Caddy) for a homelab, from a single declarative `services.yaml`
-committed to the homelab git repository.
+A small Go CLI that generates **split-horizon DNS records** (Pi-hole / dnsmasq),
+**reverse-proxy site blocks** (Caddy), and **auth-provider config** (Authelia access control)
+for a homelab, from a single declarative `services.yaml` committed to the homelab git repository.
 
-`splitdns` is **reconcile-and-report**, Terraform/`make` style: every `sync` re-derives all output
+> **Renamed:** this tool was previously `splitdns` (and before that `sd`). It outgrew its name —
+> it now manages DNS, Caddy, and auth-provider config. The `splitdns` command keeps working as an
+> alias, and `hemma doctor --fix` migrates a splitdns-era repo (manifest name, generated
+> filenames, Caddyfile import lines, .gitignore markers) automatically.
+
+`hemma` is **reconcile-and-report**, Terraform/`make` style: every `sync` re-derives all output
 from the YAML so the generated files match the declared state. It does **not** deploy, reload
 services, or SSH anywhere — it only writes files into your repo checkout. Deployment stays
 `git pull && docker compose up -d` per machine.
 
-See [`sd-design.md`](sd-design.md) for the full design rationale.
+See [`design.md`](design.md) for the full design rationale.
 
 ## Why
 
@@ -18,7 +23,7 @@ A homelab service's artifacts fan out across two machine directories:
 - its **DNS record** lives on the resolver host (the Pi),
 - its **Caddy site block** lives on the host that actually runs the service.
 
-Hand-maintaining both, in sync, across a monorepo is error-prone. `splitdns` makes one YAML file
+Hand-maintaining both, in sync, across a monorepo is error-prone. `hemma` makes one YAML file
 the source of truth and generates both sides from it.
 
 ## Install
@@ -27,11 +32,13 @@ the source of truth and generates both sides from it.
 
 ```sh
 brew tap Miista/splitdns
-brew install splitdns
+brew install hemma
 ```
 
 (The tap repo is [`Miista/homebrew-splitdns`](https://github.com/Miista/homebrew-splitdns); Homebrew strips
-the `homebrew-` prefix.)
+the `homebrew-` prefix. The formula is renamed via the tap's `formula_renames.json`, so an
+existing `splitdns` install follows the rename on `brew update && brew upgrade`. The formula
+installs a `splitdns` alias symlink.)
 
 ### Debian / Ubuntu (apt)
 
@@ -44,8 +51,11 @@ curl -1sLf https://dl.cloudsmith.io/public/guldmund/stable/gpg.key \
   | sudo gpg --dearmor -o /usr/share/keyrings/guldmund-stable-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/guldmund-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/guldmund/stable/deb/debian any-version main" \
   | sudo tee /etc/apt/sources.list.d/guldmund-stable.list
-sudo apt update && sudo apt install splitdns
+sudo apt update && sudo apt install hemma
 ```
+
+Upgrading from the pre-rename package: `sudo apt install hemma` — the `hemma` package
+`Provides`/`Replaces` `splitdns` and installs a `/usr/bin/splitdns` alias symlink.
 
 The repo is distro-agnostic (`debian any-version`), so the same line works on
 any Debian/Raspberry Pi OS/Ubuntu release. After setup, updates arrive via
@@ -57,12 +67,12 @@ regular `apt upgrade`. Older `.deb`s are on the
 Requires Go 1.26+.
 
 ```sh
-go build -o splitdns .   # or: go install .
+go build -o hemma .   # or: go install .
 ```
 
 The tool operates on `services.yaml` in **`~/docker`** by default; `-C <dir>`
 overrides it (git-style). There is no environment variable to configure. Check
-the version with `splitdns version`.
+the version with `hemma version`.
 
 ### Shell completions
 
@@ -71,9 +81,9 @@ automatically. For a from-source build, generate them yourself:
 
 ```sh
 # bash
-splitdns completion bash | sudo tee /usr/share/bash-completion/completions/splitdns > /dev/null
+hemma completion bash | sudo tee /usr/share/bash-completion/completions/hemma > /dev/null
 # zsh (into a directory on your $fpath)
-splitdns completion zsh > "${fpath[1]}/_splitdns"
+hemma completion zsh > "${fpath[1]}/_hemma"
 ```
 
 Completion covers the verbs, the `service`/`host`/`domain` nouns, and the known
@@ -88,42 +98,42 @@ Bootstrap a usable `services.yaml` entirely from the CLI — no hand-editing req
 # Commands operate on ~/docker by default; pass -C <dir> for another checkout.
 
 # 1. Declare the hosts (a host's name IS its repo directory, which must exist)
-splitdns add host resolver 192.0.2.1
-splitdns add host appbox   192.0.2.2
+hemma add host resolver 192.0.2.1
+hemma add host appbox   192.0.2.2
 
 # 2. Choose the default resolver host (whose dnsmasq receives the records)
-splitdns set dns-host resolver
+hemma set dns-host resolver
 
-# 3. Declare the domains (splitdns generates each one's TLS snippet on sync)
-splitdns add domain example.com
-splitdns add domain example.net
+# 3. Declare the domains (hemma generates each one's TLS snippet on sync)
+hemma add domain example.com
+hemma add domain example.net
 
 # 4. Add a service (mutates YAML, then syncs)
-splitdns add service docs --fqdn docs.example.com --host appbox --backend paperless:8000
+hemma add service docs --fqdn docs.example.com --host appbox --backend paperless:8000
 
 # 5. (optional) Put services behind the (auth) snippet
 #    Point at a Caddy file containing any auth directive (forward_auth, basic_auth, …), then opt services in.
-splitdns set auth-snippet auth-snippet.caddy
-splitdns update service docs --auth-mode forward
-#    Or, for an app that does OIDC itself (splitdns adds no gate, only validates the client):
-splitdns update service app --auth-mode oidc
+hemma set auth-snippet auth-snippet.caddy
+hemma update service docs --auth-mode forward
+#    Or, for an app that does OIDC itself (hemma adds no gate, only validates the client):
+hemma update service app --auth-mode oidc
 
 # 6. Re-generate everything any time (e.g. after a git pull)
-splitdns sync
+hemma sync
 ```
 
 This generates, for `docs`:
 
 ```
 # resolver/pihole/data/dnsmasq.d/generated/docs.conf
-# GENERATED by splitdns — do not edit. Source: services.yaml
+# GENERATED by hemma — do not edit. Source: services.yaml
 address=/docs.example.com/192.0.2.2
 address=/docs.example.com/::
 ```
 
 ```
 # appbox/caddy/data/sites/docs.caddy
-# GENERATED by splitdns — do not edit. Source: services.yaml
+# GENERATED by hemma — do not edit. Source: services.yaml
 docs.example.com {
 	import tls_example_com
 	reverse_proxy paperless:8000
@@ -140,19 +150,19 @@ Each service records **how** it authenticates via an auth **mode**, set with
 `--auth-mode <mode>` on `add`/`update service` (or the back-compat `--auth`, which means
 `forward`):
 
-| Mode | services.yaml | Caddy rendered | splitdns's role |
+| Mode | services.yaml | Caddy rendered | hemma's role |
 |------|---------------|----------------|-----------------|
 | `none` (default) | *(omitted)* | plain `reverse_proxy` | nothing |
 | `forward` | `auth: forward` | `handle` block with `import auth` before `reverse_proxy` | adds the forward-auth gate (the `(auth)` snippet) |
-| `oidc` | `auth: oidc` | **plain** `reverse_proxy` (no `import auth`) | adds **no** gate; the app speaks OIDC itself. splitdns only **validates** (read-only) that an Authelia OIDC client exists |
+| `oidc` | `auth: oidc` | **plain** `reverse_proxy` (no `import auth`) | adds **no** gate; the app speaks OIDC itself. hemma only **validates** (read-only) that an Authelia OIDC client exists |
 
 `oidc` renders a plain `reverse_proxy` — identical to `none` in Caddy — because the app
-performs the OIDC flow itself; splitdns must not add a second (forward-auth) gate in front of
+performs the OIDC flow itself; hemma must not add a second (forward-auth) gate in front of
 it. Recording the mode as `oidc` (rather than leaving it `none`) keeps the intent legible: the
 `list` `AUTH` column and services.yaml show `oidc`, so a protected service never looks like an
 unprotected one.
 
-The `AUTH` column in `splitdns list` shows the mode (`forward` / `oidc` / `-`).
+The `AUTH` column in `hemma list` shows the mode (`forward` / `oidc` / `-`).
 
 **Back-compat:** a legacy `auth: true` in services.yaml still parses (as `forward`) and is
 re-emitted as `auth: forward` on the next mutation; `auth: false`/absent = `none`.
@@ -161,35 +171,35 @@ re-emitted as `auth: forward` on the next mutation; `auth: false`/absent = `none
 `forward` or `oidc` service to members of the given auth-provider (Authelia) groups. Groups are
 stored in the object YAML form (`auth: {mode, groups}`; the short `auth: forward` form is kept
 when no groups are set) and flow into a generated Authelia access-control file on the
-`auth_service` host — `authelia/data/config/splitdns.access_control.generated.yml` — containing
+`auth_service` host — `authelia/data/config/hemma.access_control.generated.yml` — containing
 `access_control` rules for forward services (bypass rules for their `public_paths`, then a
 `one_factor` rule; multiple groups are OR'd) and named
-`identity_providers.oidc.authorization_policies` for oidc services with groups. splitdns
+`identity_providers.oidc.authorization_policies` for oidc services with groups. hemma
 generates the file but does not wire it into Authelia; include it in the Authelia config and
 point each OIDC client's `authorization_policy` at its service name (the OIDC validation warns
 if you forget). Groups with `auth: none` are a validation error.
 
-**OIDC validation (read-only, splitdns does NOT configure OIDC).** For each `auth: oidc`
-service, splitdns reads the Authelia config at
+**OIDC validation (read-only, hemma does NOT configure OIDC).** For each `auth: oidc`
+service, hemma reads the Authelia config at
 `<auth_service host dir>/authelia/data/config/configuration.yml` and checks that some
 `identity_providers.oidc.clients[].redirect_uris` entry starts with
 `https://<fqdn>/` (callback paths are app-defined, so the match is fqdn-only). If none does, it warns; if the config is missing/unparseable
-it emits a softer advisory and proceeds (report-but-proceed). splitdns never writes that file —
+it emits a softer advisory and proceeds (report-but-proceed). hemma never writes that file —
 **registering the OIDC client and configuring the app's OIDC env are out of scope.** If
 `auth_service` is unset, it notes that OIDC clients can't be verified.
 
 ### Forward auth
 
 The `(auth)` snippet mechanism (used by `auth: forward`) is **generic** — its body can be any Caddy auth directive
-(`basic_auth`, a JWT check, an IP allowlist, …); splitdns copies it verbatim and is agnostic to
+(`basic_auth`, a JWT check, an IP allowlist, …); hemma copies it verbatim and is agnostic to
 its contents. This section works through the common case: putting services behind a
 [Caddy `forward_auth`](https://caddyserver.com/docs/caddyfile/directives/forward_auth)
 provider (Authelia, Authentik, oauth2-proxy, …). The design keeps one shared,
 substitution-free snippet for the whole fleet:
 
-- **`defaults.auth_snippet`** (`splitdns set auth-snippet <path>`) points at a Caddy file whose
+- **`defaults.auth_snippet`** (`hemma set auth-snippet <path>`) points at a Caddy file whose
   contents are your `forward_auth` block. Its body is copied verbatim into a generated
-  **`caddy/data/splitdns.auth.generated.caddy`** on *every* host, wrapped as a Caddy snippet named
+  **`caddy/data/hemma.auth.generated.caddy`** on *every* host, wrapped as a Caddy snippet named
   `(auth)` and imported before the site blocks. Because the target is a **public FQDN**
   (e.g. `https://auth.example.com`) resolved by your split-horizon DNS, the same snippet is
   byte-identical on every host — no per-host substitution.
@@ -199,7 +209,7 @@ substitution-free snippet for the whole fleet:
 - The `(auth)` file is **always generated** — an empty `(auth) {}` no-op stub when no snippet is
   set — so toggling auth never rewrites site blocks, and `doctor` tracks it as an ordinary
   generated file (it flags drift if you edit the source without re-syncing).
-- If the configured `auth_snippet` source is **missing/unreadable at sync time**, splitdns keeps
+- If the configured `auth_snippet` source is **missing/unreadable at sync time**, hemma keeps
   the last-good generated file (warns, exits non-zero) rather than silently resetting to the empty
   stub — a path typo can never disable auth fleet-wide.
 - A service that **is** the auth backend (`defaults.auth_service`) is refused any auth mode
@@ -214,11 +224,11 @@ forward_auth https://auth.example.com {
 }
 ```
 
-`splitdns set auth-snippet auth-snippet.caddy` generates on every host:
+`hemma set auth-snippet auth-snippet.caddy` generates on every host:
 
 ```
-# <host>/caddy/data/splitdns.auth.generated.caddy
-# GENERATED by splitdns — do not edit. Source: services.yaml
+# <host>/caddy/data/hemma.auth.generated.caddy
+# GENERATED by hemma — do not edit. Source: services.yaml
 (auth) {
 	forward_auth https://auth.example.com {
 		uri /api/authz/forward-auth
@@ -231,7 +241,7 @@ and a service added with `--auth` gets:
 
 ```
 # appbox/caddy/data/sites/status.caddy
-# GENERATED by splitdns — do not edit. Source: services.yaml
+# GENERATED by hemma — do not edit. Source: services.yaml
 status.example.com {
 	import tls_example_com
 	handle {
@@ -281,22 +291,22 @@ exempt from). Set it directly in `services.yaml`; there is no CLI flag for it.
 ## Commands
 
 ```
-splitdns [-C <dir>] add    service <name> --fqdn <f> --host <h> --backend <b> [--auth-mode forward|oidc] [--auth-groups <g1,g2>]
-splitdns [-C <dir>] update service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth-mode forward|oidc|none] [--auth-groups <g1,g2>]
-splitdns [-C <dir>] remove service <name>
-splitdns [-C <dir>] sync   [--incremental | --complete]
+hemma [-C <dir>] add    service <name> --fqdn <f> --host <h> --backend <b> [--auth-mode forward|oidc] [--auth-groups <g1,g2>]
+hemma [-C <dir>] update service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth-mode forward|oidc|none] [--auth-groups <g1,g2>]
+hemma [-C <dir>] remove service <name>
+hemma [-C <dir>] sync   [--incremental | --complete]
 
-splitdns [-C <dir>] add    host   <name> <ip>
-splitdns [-C <dir>] remove host   <name>
-splitdns [-C <dir>] add    domain <name>
-splitdns [-C <dir>] remove domain <name>
-splitdns [-C <dir>] set    dns-host <name>
-splitdns [-C <dir>] set    auth-snippet <path>
+hemma [-C <dir>] add    host   <name> <ip>
+hemma [-C <dir>] remove host   <name>
+hemma [-C <dir>] add    domain <name>
+hemma [-C <dir>] remove domain <name>
+hemma [-C <dir>] set    dns-host <name>
+hemma [-C <dir>] set    auth-snippet <path>
 
-splitdns [-C <dir>] list   [--all]
-splitdns [-C <dir>] verify [--all] [<fqdn>]
-splitdns [-C <dir>] version
-splitdns            completion <bash|zsh>
+hemma [-C <dir>] list   [--all]
+hemma [-C <dir>] verify [--all] [<fqdn>]
+hemma [-C <dir>] version
+hemma            completion <bash|zsh>
 
   -C <dir>   operate on <dir> instead of the default ~/docker
 ```
@@ -308,7 +318,7 @@ splitdns            completion <bash|zsh>
 | `remove` | Drop the service from YAML, delete its tracked files, drop it from the manifest. |
 | `sync --incremental` *(default)* | Write/update files for every valid entry. **Never deletes.** |
 | `sync --complete` | Incremental **plus GC**: delete tracked files whose service is gone. Never touches non-manifest files. |
-| `add host` / `add domain` | Declare a host / domain. `add host <name> <ip>` (the name is its repo directory, which must already exist; the IP must be unique). `add domain <name>` — splitdns generates the domain's TLS snippet on sync. |
+| `add host` / `add domain` | Declare a host / domain. `add host <name> <ip>` (the name is its repo directory, which must already exist; the IP must be unique). `add domain <name>` — hemma generates the domain's TLS snippet on sync. |
 | `remove host` / `remove domain` | **Refuses** while any service still references it (and lists the blockers). Idempotent otherwise. |
 | `set dns-host <name>` | Set the default resolver host (the one whose dnsmasq receives records). |
 | `set auth-snippet <path>` | Set the `(auth)` snippet source (a repo-relative Caddy file holding any auth directive). Pass `-` to clear it (regenerates an empty no-op stub). See [Forward auth](#forward-auth-optional). |
@@ -325,7 +335,7 @@ All commands are **verb-first**: `<verb> <noun> <args>` (e.g. `add domain exampl
 
 ## Source of truth: `services.yaml`
 
-`splitdns` **owns** this file and rewrites it wholesale on mutation. Ordering and human comments
+`hemma` **owns** this file and rewrites it wholesale on mutation. Ordering and human comments
 are not preserved — document intent in this README, not in the YAML.
 
 ```yaml
@@ -338,7 +348,7 @@ domains:
   example.net: {}
 
 defaults:
-  dns_host: resolver          # the single resolver host (set via: splitdns set dns-host)
+  dns_host: resolver          # the single resolver host (set via: hemma set dns-host)
   auth_snippet: auth-snippet.caddy   # optional; auth directive copied into (auth) on every host
 
 services:
@@ -360,7 +370,7 @@ repo directory).
 
 ## Manifest
 
-`splitdns-manifest.yaml` (repo root, **committed to git**) records which files each service
+`hemma-manifest.yaml` (repo root, **committed to git**) records which files each service
 generated. It is the authority for safe deletion: only manifest-tracked files are ever deleted,
 and files not in the manifest are never touched. If lost or corrupt, it is rebuilt from
 `services.yaml` on the next run.
@@ -378,7 +388,7 @@ synced 11/12 services; 1 skipped: docs (unknown host 'appbx' — defined hosts: 
 
 ## Prerequisites (one-time, manual)
 
-`splitdns` writes only into its own `sites/` and `tls/` directories; it never edits a host's main
+`hemma` writes only into its own `sites/` and `tls/` directories; it never edits a host's main
 `Caddyfile`. Each host's `Caddyfile` must therefore include both:
 
 ```
@@ -386,16 +396,16 @@ import tls/*.caddy
 import sites/*.caddy
 ```
 
-`splitdns` generates the `(tls_<domain>)` snippets into `tls/` (deriving cert paths from the
+`hemma` generates the `(tls_<domain>)` snippets into `tls/` (deriving cert paths from the
 convention `caddy/data/certs/<domain>/`), so you no longer hand-write them. Caddy serves the
-wildcard certs from an external acme.sh pipeline — `splitdns` never touches certs or ACME.
+wildcard certs from an external acme.sh pipeline — `hemma` never touches certs or ACME.
 
 ### .gitignore and the `data/` directory
 
-`splitdns`'s generated files live under `data/` directories (`caddy/data/sites/`, etc.). If your repo
+`hemma`'s generated files live under `data/` directories (`caddy/data/sites/`, etc.). If your repo
 ignores runtime data with a broad rule like `**/data/**`, those generated files are **silently
-ignored by git** — they generate fine but never commit or deploy. `splitdns` detects this and warns on
-`sync` (and via `splitdns doctor`), printing the exact per-host `.gitignore` negation lines to add,
+ignored by git** — they generate fine but never commit or deploy. `hemma` detects this and warns on
+`sync` (and via `hemma doctor`), printing the exact per-host `.gitignore` negation lines to add,
 e.g. in `pi/.gitignore`:
 
 ```
@@ -405,9 +415,9 @@ e.g. in `pi/.gitignore`:
 !pihole/data/dnsmasq.d/generated/**
 ```
 
-`splitdns doctor` reports the problem and the exact lines; **`splitdns doctor --fix`** writes them for you,
+`hemma doctor` reports the problem and the exact lines; **`hemma doctor --fix`** writes them for you,
 into a managed block in each `<host>/.gitignore` (preserving your other rules), then re-verifies.
-`splitdns` only touches `.gitignore` when you explicitly run `doctor --fix`. Runtime data stays ignored.
+`hemma` only touches `.gitignore` when you explicitly run `doctor --fix`. Runtime data stays ignored.
 
 ## After a sync (deploy concern, not this tool)
 
