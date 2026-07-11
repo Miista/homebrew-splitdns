@@ -148,6 +148,12 @@ func cmdDoctor(cfgPath string, args []string) int {
 		fmt.Println(tick + " Auth config is consistent.")
 	}
 
+	// --- users-database cross-checks (advisory only; never affect exit code) ---
+	// Gated inside the provider on the users database file existing.
+	for _, msg := range usersDBWarnings(repoRoot, cfg) {
+		fmt.Printf("%s %s\n", warn, msg)
+	}
+
 	if problems > 0 {
 		return 1
 	}

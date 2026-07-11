@@ -136,6 +136,8 @@ func Run(args []string) int {
 		return dispatchNoun(repoRoot, cfgPath, "disable", rest)
 	case "set":
 		return dispatchSet(cfgPath, rest)
+	case "create":
+		return dispatchCreate(cfgPath, rest)
 	case "list":
 		return cmdList(cfgPath, rest)
 	case "verify":
@@ -936,9 +938,13 @@ Building blocks (a service references a host and a domain):
   hemma set    auth-snippet <path>   Set the (auth) snippet source ('-' clears). Services opt in with --auth.
   hemma set    auth-service <name>   Name the forward-auth backend service ('-' clears); preserves X-Forwarded-Host.
 
+Credentials (print-only; the auth provider's config and users database are never written):
+  hemma create app oidc <app_name> [callback_path]   Generate OIDC client credentials + a config snippet to paste in.
+  hemma create user <username>                       Interactively hash a new user's password + print the users-database snippet.
+
 Other:
   hemma apply                    Make config live on THIS host: restart pihole / validate+reload caddy. Run on each host. Refuses if the repo has drift.
-  hemma list [--all]             Show current hosts, domains, and services. Services default to THIS host; --all shows every host.
+  hemma list [--all]             Overview: hosts, domains, services, and auth groups (users + restricted services). Services default to THIS host; --all shows every host.
   hemma verify [--all] [<fqdn>]  Check live DNS/Caddy per service. Defaults to services this host can check; --all includes the rest. Run on each host; needs docker.
   hemma measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>  Time the request breakdown (dns/connect/tls/ttfb) for a service or any URL. --compare A/Bs split-horizon vs public read-only (dns-host only, services only).
   hemma doctor [--fix]           Audit the repo (gitignored files, Caddyfile imports, generated-file drift); --fix reconciles files and .gitignore.

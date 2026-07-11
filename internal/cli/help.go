@@ -109,12 +109,44 @@ so the original request host survives the hairpin through Caddy; without it,
 post-login redirects loop back to the portal. Parallels 'set dns-host': one
 repo-wide role named by service. Clearing it ('-') drops the header-preserve.`},
 
-	{"list", `hemma list — show hosts, domains, and services
+	{"create app", `hemma create app oidc — generate OIDC client credentials for an app
+
+Usage: hemma create app oidc <app_name> [callback_path]
+
+Mints a client id and client secret (72 chars, RFC 3986 unreserved charset)
+plus the secret's PBKDF2-SHA512 digest, then prints a ready-to-paste
+identity_providers.oidc.clients snippet. Print-only: the auth provider's
+configuration is never written.
+
+If <app_name> matches a configured service, its real fqdn is used for the
+redirect URI, and — when the service has auth groups — the snippet references
+the generated named authorization policy instead of one_factor.
+[callback_path] defaults to /CHANGEME (apps differ; fill in the real path).`},
+
+	{"create user", `hemma create user — interactively create an auth user (hash + snippet)
+
+Usage: hemma create user <username>
+
+Prompts for an email and a password (hidden, entered twice), hashes the
+password with argon2id (Authelia defaults), and prints a users-database entry
+to paste in. Print-only: the users database is hand-owned and secret-bearing,
+so hemma never writes it. Assign groups by editing the pasted entry's
+'groups: []' — 'hemma doctor' cross-checks them against services.yaml.`},
+
+	{"list", `hemma list — overview: hosts, domains, services, and auth groups
 
 Usage: hemma list [--all]
 
 By default the services list is filtered to those running on THIS host
 (matched by local IP).
+
+When any auth group exists, a Groups section follows the services table: the
+union of the auth provider's users database (user -> groups, read-only) and
+services.yaml (service -> auth groups), one block per group, showing its users
+and the services restricted to it. One-sided groups still list (services but
+no users = nobody can access; users but no services). If the users database is
+missing or unreadable, a services-only view is shown with a note. Usernames
+only; never password hashes or emails.
 
 Flags:
   -a, --all   Show services on every host, not just this one.`},

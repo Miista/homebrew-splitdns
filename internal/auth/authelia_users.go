@@ -11,7 +11,7 @@ import (
 )
 
 // Read-only cross-validation of Authelia's users database against the
-// services' auth groups. splitdns never writes users_database.yml (it is
+// services' auth groups. hemma never writes users_database.yml (it is
 // hand-owned and secret-bearing); it only parses username -> groups to catch
 // group typos and services nobody can access. Warnings never include password
 // hashes or email addresses.
