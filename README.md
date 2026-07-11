@@ -18,24 +18,36 @@ See [`design.md`](design.md) for the full design rationale.
 
 ## Why
 
-A homelab service's artifacts fan out across two machine directories:
+A homelab service's artifacts fan out across **three** machine directories:
 
 - its **DNS record** lives on the resolver host (the Pi),
-- its **Caddy site block** lives on the host that actually runs the service.
+- its **Caddy site block** lives on the host that actually runs the service,
+- its **access policy** — who may reach it — lives on the auth host, in the auth provider's
+  config (Authelia `access_control` rules for forward-auth services, named OIDC
+  `authorization_policies` for apps that do OIDC themselves).
 
-Hand-maintaining both, in sync, across a monorepo is error-prone. `hemma` makes one YAML file
-the source of truth and generates both sides from it.
+Hand-maintaining all three, in sync, across a monorepo is error-prone — and the auth side
+fails worst: under a default-deny policy a forgotten rule is an outage, and under a permissive
+one a forgotten group restriction quietly grants every authenticated user access (the
+"why can my wife reach pihole?" class of bug). Routing and access also drift apart: the Caddy
+gate and the Authelia rule for the same service live in different files on different hosts,
+with nothing keeping them consistent.
+
+`hemma` makes one YAML file the source of truth for all of it: where a service runs, how it is
+reached, **and who may reach it** — DNS, proxy, and access policy are generated from the same
+`services.yaml` entry, and `doctor` cross-checks the parts hemma deliberately does not own
+(OIDC client registrations, users and their groups).
 
 ## Install
 
 ### Homebrew
 
 ```sh
-brew tap Miista/splitdns
+brew tap Miista/hemma
 brew install hemma
 ```
 
-(The tap repo is [`Miista/homebrew-splitdns`](https://github.com/Miista/homebrew-splitdns); Homebrew strips
+(The tap repo is [`Miista/homebrew-hemma`](https://github.com/Miista/homebrew-hemma); Homebrew strips
 the `homebrew-` prefix. The formula is renamed via the tap's `formula_renames.json`, so an
 existing `splitdns` install follows the rename on `brew update && brew upgrade`. The formula
 installs a `splitdns` alias symlink.)
@@ -60,7 +72,7 @@ Upgrading from the pre-rename package: `sudo apt install hemma` — the `hemma` 
 The repo is distro-agnostic (`debian any-version`), so the same line works on
 any Debian/Raspberry Pi OS/Ubuntu release. After setup, updates arrive via
 regular `apt upgrade`. Older `.deb`s are on the
-[releases page](https://github.com/Miista/homebrew-splitdns/releases).
+[releases page](https://github.com/Miista/homebrew-hemma/releases).
 
 ### From source
 
@@ -119,9 +131,9 @@ hemma update service docs --auth-mode forward
 hemma update service app --auth-mode oidc
 
 # 5b. (optional) Mint auth credentials — print-only, native Go crypto; paste the snippets
-#     into the auth provider's config by hand (splitdns never writes those files).
-splitdns create app oidc app /oidc/callback   # OIDC client id + secret + configuration.yml snippet
-splitdns create user alice                    # argon2id password hash + users_database.yml snippet
+#     into the auth provider's config by hand (hemma never writes those files).
+hemma create app oidc app /oidc/callback   # OIDC client id + secret + configuration.yml snippet
+hemma create user alice                    # argon2id password hash + users_database.yml snippet
 
 # 6. Re-generate everything any time (e.g. after a git pull)
 hemma sync
@@ -307,9 +319,16 @@ hemma [-C <dir>] add    domain <name>
 hemma [-C <dir>] remove domain <name>
 hemma [-C <dir>] set    dns-host <name>
 hemma [-C <dir>] set    auth-snippet <path>
+hemma [-C <dir>] set    auth-service <name>
+
+hemma [-C <dir>] create app oidc <app_name> [callback_path]
+hemma [-C <dir>] create user <username>
 
 hemma [-C <dir>] list   [--all]
 hemma [-C <dir>] verify [--all] [<fqdn>]
+hemma [-C <dir>] apply
+hemma [-C <dir>] doctor [--fix]
+hemma [-C <dir>] measure [--compare] [-n <runs>] <service|fqdn|url>
 hemma [-C <dir>] version
 hemma            completion <bash|zsh>
 
@@ -327,7 +346,13 @@ hemma            completion <bash|zsh>
 | `remove host` / `remove domain` | **Refuses** while any service still references it (and lists the blockers). Idempotent otherwise. |
 | `set dns-host <name>` | Set the default resolver host (the one whose dnsmasq receives records). |
 | `set auth-snippet <path>` | Set the `(auth)` snippet source (a repo-relative Caddy file holding any auth directive). Pass `-` to clear it (regenerates an empty no-op stub). See [Forward auth](#forward-auth-optional). |
-| `list` | Show current hosts, domains, and services as an aligned table. The `AUTH` column marks each service `✓` (imports the `(auth)` snippet) or `-`, and an `auth snippet:` line shows the configured `(auth)` source (or that none is set). The services list defaults to those on **this** host (matched by local IP); `--all` shows every host. Read-only. |
+| `set auth-service <name>` | Name the service that IS the forward-auth portal (e.g. Authelia); its site block preserves `X-Forwarded-Host` through the hairpin. Pass `-` to clear. |
+| `create app oidc` | Mint OIDC client credentials (id, secret, digest) + a ready-to-paste provider config snippet. Print-only. See [Auth](#auth-optional). |
+| `create user` | Interactively hash a new user's password (argon2id) + print the users-database snippet. Print-only. |
+| `list` | The overview of the home: hosts, domains, services (with an `AUTH` column showing `forward` / `oidc` / `-`), and the auth **groups** — each group's users and the services restricted to it, including orphans (a group with services but no users, or users but no services). The services list defaults to those on **this** host (matched by local IP); `--all` shows every host. Read-only. |
+| `apply` | Make synced config live on THIS host: restart pihole (resolver), `caddy validate` + reload (service hosts), and validate + restart the auth provider (auth host). Refuses on repo drift. Run on each host. |
+| `doctor [--fix]` | Audit the repo: gitignored generated files, Caddyfile imports, generated-file drift, auth config consistency (OIDC clients registered, policies referenced, groups exist on real users). `--fix` reconciles files, .gitignore, and legacy-name migration. |
+| `measure` | Time the request breakdown (dns/connect/tls/ttfb) for a service or URL; `--compare` A/Bs split-horizon vs public. Read-only. |
 | `completion <bash\|zsh>` | Print a static shell completion script to stdout (verbs, nouns, and flags). See [Shell completions](#shell-completions). |
 | `verify` | Check **live** DNS resolution per service: pihole's own view (in-container `dig`) + the client view (`getent`), asserting A == host IP and AAAA == `::`. Defaults to services this host can check (it is the resolver or the service host); `--all` includes the rest. Run **on each host** after a deploy (§13). Needs docker. |
 
@@ -393,8 +418,8 @@ synced 11/12 services; 1 skipped: docs (unknown host 'appbx' — defined hosts: 
 
 ## Prerequisites (one-time, manual)
 
-`hemma` writes only into its own `sites/` and `tls/` directories; it never edits a host's main
-`Caddyfile`. Each host's `Caddyfile` must therefore include both:
+`hemma` writes only its own generated files (dnsmasq records, Caddy `sites/` and `tls/`
+snippets, the auth access-control artifact); it never edits a host's main `Caddyfile`. Each host's `Caddyfile` must therefore include both:
 
 ```
 import tls/*.caddy
@@ -410,29 +435,32 @@ wildcard certs from an external acme.sh pipeline — `hemma` never touches certs
 `hemma`'s generated files live under `data/` directories (`caddy/data/sites/`, etc.). If your repo
 ignores runtime data with a broad rule like `**/data/**`, those generated files are **silently
 ignored by git** — they generate fine but never commit or deploy. `hemma` detects this and warns on
-`sync` (and via `hemma doctor`), printing the exact per-host `.gitignore` negation lines to add,
-e.g. in `pi/.gitignore`:
+`sync` (and via `hemma doctor`), printing the negation rules to add:
 
 ```
-!pihole/data/
-!pihole/data/dnsmasq.d/
-!pihole/data/dnsmasq.d/generated/
-!pihole/data/dnsmasq.d/generated/**
+!**/data/
+!**/data/**/
+!**/data/**/*.generated.conf
+!**/caddy/data/**/*.caddy
+!**/data/**/*.generated.yml
 ```
 
 `hemma doctor` reports the problem and the exact lines; **`hemma doctor --fix`** writes them for you,
-into a managed block in each `<host>/.gitignore` (preserving your other rules), then re-verifies.
-`hemma` only touches `.gitignore` when you explicitly run `doctor --fix`. Runtime data stays ignored.
+into a managed block in the repo-root `.gitignore` (between `# >>> hemma managed >>>` markers,
+preserving your other rules), then re-verifies. `hemma` only touches `.gitignore` when you
+explicitly run `doctor --fix`. Runtime data (databases, caches, certs) stays ignored.
 
-## After a sync (deploy concern, not this tool)
+## After a sync: `hemma apply`
 
-A changed bind-mounted file does **not** restart a container on its own. Your per-machine deploy
-wrapper should, after `git pull`, run `docker compose up -d` and — if generated files changed —
-`pihole restartdns` / `caddy reload`. Then verify resolution against the running resolver:
+A changed bind-mounted file does **not** restart a container on its own. After `git pull` on a
+host, run `hemma apply` there: it restarts pihole (if this host is the resolver), validates and
+reloads Caddy (if this host serves anything), and validates + restarts the auth provider (if
+this host runs the `auth_service`) — each with validate-before-reload so a bad config aborts
+instead of taking the service down. `hemma verify` then checks live DNS per service:
 
 ```sh
-docker exec pihole dig +short docs.example.com @127.0.0.1     # expect the service host IP
-docker exec pihole dig +short AAAA docs.example.com @127.0.0.1 # expect :: (AAAA suppressed)
+hemma apply     # on each host after a pull
+hemma verify    # assert A == host IP and AAAA == :: against the running resolver
 ```
 
 ## Development
@@ -451,13 +479,15 @@ Package layout (`internal/`):
 | `plan` | Validate entries → desired `(path, content)` set; collect per-entry errors. |
 | `manifest` | Load / save / rebuild the manifest; safe-deletion authority. |
 | `render` | Templates for the dnsmasq `.conf` and Caddy `.caddy` files. |
+| `auth` | The pluggable auth-provider boundary (`Provider` interface + registry): access-control rendering, credential minting, config validation. Authelia is the sole implementation today. |
 | `sync` | The reconcile engine — the **only** code that writes or deletes generated files. |
 | `cli` | Command parsing and wiring; thin `main.go`. |
 
 ## Non-goals
 
-No service reloads, no SSH/orchestration, no backend health checks, no per-file checksums, no
-editing of machines' main Caddyfiles.
+No SSH/orchestration (`apply` acts only on the host it runs on), no backend health checks, no
+per-file checksums, no editing of machines' main Caddyfiles, and no writing of the auth
+provider's own config or users database (`create` prints snippets; you paste them).
 
 ## License
 

@@ -166,8 +166,11 @@ Flags:
 
 Usage: hemma apply
 
-Restarts pihole / validates+reloads caddy for this host's generated files.
-Run it on each host after config changes. Refuses if the repo has drift.`},
+Restarts pihole (resolver host), validates + reloads caddy (service hosts),
+and validates + restarts the auth provider (the host running auth_service) —
+each validate-before-reload, so a bad config aborts instead of taking the
+service down. Run it on each host after config changes. Refuses if the repo
+has drift.`},
 
 	{"doctor", `hemma doctor — audit the repo (gitignore, Caddyfile imports, drift)
 

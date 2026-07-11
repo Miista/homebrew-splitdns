@@ -943,7 +943,7 @@ Credentials (print-only; the auth provider's config and users database are never
   hemma create user <username>                       Interactively hash a new user's password + print the users-database snippet.
 
 Other:
-  hemma apply                    Make config live on THIS host: restart pihole / validate+reload caddy. Run on each host. Refuses if the repo has drift.
+  hemma apply                    Make config live on THIS host: restart pihole / validate+reload caddy and the auth provider. Run on each host. Refuses if the repo has drift.
   hemma list [--all]             Overview: hosts, domains, services, and auth groups (users + restricted services). Services default to THIS host; --all shows every host.
   hemma verify [--all] [<fqdn>]  Check live DNS/Caddy per service. Defaults to services this host can check; --all includes the rest. Run on each host; needs docker.
   hemma measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>  Time the request breakdown (dns/connect/tls/ttfb) for a service or any URL. --compare A/Bs split-horizon vs public read-only (dns-host only, services only).
