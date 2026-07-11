@@ -118,6 +118,11 @@ hemma update service docs --auth-mode forward
 #    Or, for an app that does OIDC itself (hemma adds no gate, only validates the client):
 hemma update service app --auth-mode oidc
 
+# 5b. (optional) Mint auth credentials — print-only, native Go crypto; paste the snippets
+#     into the auth provider's config by hand (splitdns never writes those files).
+splitdns create app oidc app /oidc/callback   # OIDC client id + secret + configuration.yml snippet
+splitdns create user alice                    # argon2id password hash + users_database.yml snippet
+
 # 6. Re-generate everything any time (e.g. after a git pull)
 hemma sync
 ```

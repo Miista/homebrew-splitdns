@@ -384,13 +384,18 @@ the OIDC validation (§4.5) warns about read-only. The provider config itself is
 **The auth-provider interface.** Everything provider-specific lives behind
 `auth.Provider` (`internal/auth`): the provider's config-file convention path
 (`ConfigPath`), the access-control artifact (`AccessControl(services) → (path,
-content, ok)`, paths relative to the auth host's directory), and the read-only
-validation of its own config (`ValidateConfig`). `plan` and `cli` are
+content, ok)`, paths relative to the auth host's directory), the read-only
+validation of its own config (`ValidateConfig`) and users database
+(`ValidateUsers`, §6.4; `UserGroups` feeds `list`'s Groups section, §6.6),
+and credential minting + paste-in snippets
+(`GenerateOIDCClient`/`OIDCClientSnippet`/`HashUserPassword`/`UserSnippet`,
+§6.5 — digest algorithms, parameters, and crypt encodings are implementation
+details of the provider type; the cli never sees them). `plan` and `cli` are
 provider-agnostic: plan places the returned `(path, content)` under the
 `@auth-access` owner, cli prints the returned warnings. Providers are resolved
 through a compile-time registry keyed by name, defaulting to `"authelia"` —
 the interface boundary exists so a different provider (e.g. tinyauth) is a
-drop-in. *Adding a provider*: implement the four `Provider` methods in a new
+drop-in. *Adding a provider*: implement the `Provider` methods in a new
 file in `internal/auth`, call `Register(yourProvider{})` from `init`, and keep
 the single-writer rule — providers return content, they never write files.
 
@@ -556,7 +561,41 @@ hemma doctor [--fix]     (-f)
 
 Exits non-zero if any problem remains.
 
-### 6.5 Read-only inspection: `list`, `verify`, `measure`
+Additionally, doctor runs **advisory users-database cross-checks** (never affect the exit code),
+gated on the provider's users database existing next to its config (filename taken from
+`authentication_backend.file.path`'s basename when declared, else `users_database.yml`): every
+group referenced in `services.yaml` auth groups must exist on at least one user (catches typos),
+and every group-gated service must have at least one user in an allowed group ("nobody can access
+X"). The file is parsed read-only (username → groups only); warnings never contain password
+hashes or email addresses. All of this lives behind `auth.Provider.ValidateUsers`.
+
+### 6.5 Credential generation: `create`
+
+```
+splitdns create app oidc <app_name> [callback_path]
+splitdns create user <username>
+```
+
+Absorbs the standalone `authcli` tool, with native Go crypto instead of `docker run authelia`
+shell-outs. Both commands are **print-only**: they mint credentials and print paste-in snippets;
+the provider's `configuration.yml` and `users_database.yml` are hand-owned, secret-bearing files
+splitdns never writes. Everything provider-specific — digest algorithms/parameters and snippet
+YAML — lives behind `auth.Provider` (`GenerateOIDCClient`, `OIDCClientSnippet`,
+`HashUserPassword`, `UserSnippet`); the Authelia implementation uses github.com/go-crypt/crypt
+(the library Authelia itself uses), so digests are byte-compatible with
+`authelia crypto hash validate` by construction (PBKDF2-SHA512 crypt format for OIDC client
+secrets, argon2id for user passwords, Authelia's default parameters).
+
+- **`create app oidc`** mints a 72-char client id + secret (RFC 3986 unreserved charset,
+  crypto/rand) and the secret's digest. If `<app_name>` matches a configured service, the
+  redirect URI uses its real fqdn, and — when the service has auth groups — the snippet
+  references the generated named `authorization_policy` (§4.6) instead of `one_factor`.
+  `[callback_path]` defaults to `/CHANGEME` (callback paths are app-defined).
+- **`create user`** prompts for an email (plain) and a password (hidden, twice, via
+  golang.org/x/term; requires a TTY), and prints a users-database entry with the argon2id digest.
+  Groups are assigned by editing the pasted entry; `doctor` cross-checks them (§6.4).
+
+### 6.6 Read-only inspection: `list`, `verify`, `measure`
 
 ```
 hemma list   [--all]                 (-a)
@@ -569,6 +608,12 @@ hemma measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>   (-c/--a
   It warns first if `dns_host` is unset, marks disabled services `[disabled]`, and reports repo
   drift at the end. **Services default to the current host** (matched by local IP); `--all` shows
   every host. If the local IP matches no host, it falls back to showing everything.
+  When any auth group exists, a **Groups section** follows the services table: the union of the
+  provider's users database (user → groups, via `auth.Provider.UserGroups`, read-only) and
+  `services.yaml` auth groups, one block per group with its users and the services restricted to
+  it. One-sided groups still list (services-but-no-users = nobody can access, which `doctor`
+  warns on; users-but-no-services). A missing/unreadable users database degrades to a
+  services-only view with a note. Usernames only — never password hashes or emails.
 - **`verify`** (§8): live resolution/serving checks, **host-split** like `apply`. Defaults to
   services this host can actually check (it is the resolver or the service host); `--all`
   includes the rest. An explicit `<fqdn>` always reports. Needs docker.
@@ -579,7 +624,7 @@ hemma measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>   (-c/--a
   configured **service** and must run **on the dns-host** (the public-IP lookup uses DoH egress,
   sanctioned only on the resolver). The target may appear on either side of the flags.
 
-### 6.6 Other
+### 6.7 Other
 
 ```
 hemma version | --version | -v
@@ -621,7 +666,7 @@ fatal either → keep-last-good + report (§4.5, §8).
   glyphs (`✓ ✗ ⚠`) only when stdout is a TTY and `NO_COLOR` is unset.
 
 **`verify`** confirms behavior against the *running* system, not config syntax. It is host-split
-(§6.5) and, per applicable host, runs (all via `docker exec`):
+(§6.6) and, per applicable host, runs (all via `docker exec`):
 
 - **Resolver side** (in the `pihole` container):
   - `dig +short A <fqdn> @127.0.0.1` must equal the service host IP (else the conf isn't loaded
