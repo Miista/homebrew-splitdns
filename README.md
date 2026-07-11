@@ -157,6 +157,18 @@ The `AUTH` column in `splitdns list` shows the mode (`forward` / `oidc` / `-`).
 **Back-compat:** a legacy `auth: true` in services.yaml still parses (as `forward`) and is
 re-emitted as `auth: forward` on the next mutation; `auth: false`/absent = `none`.
 
+**Auth groups.** `--auth-groups a,b` (on `add`/`update service`; `''` clears) restricts a
+`forward` or `oidc` service to members of the given auth-provider (Authelia) groups. Groups are
+stored in the object YAML form (`auth: {mode, groups}`; the short `auth: forward` form is kept
+when no groups are set) and flow into a generated Authelia access-control file on the
+`auth_service` host — `authelia/data/config/splitdns.access_control.generated.yml` — containing
+`access_control` rules for forward services (bypass rules for their `public_paths`, then a
+`one_factor` rule; multiple groups are OR'd) and named
+`identity_providers.oidc.authorization_policies` for oidc services with groups. splitdns
+generates the file but does not wire it into Authelia; include it in the Authelia config and
+point each OIDC client's `authorization_policy` at its service name (the OIDC validation warns
+if you forget). Groups with `auth: none` are a validation error.
+
 **OIDC validation (read-only, splitdns does NOT configure OIDC).** For each `auth: oidc`
 service, splitdns reads the Authelia config at
 `<auth_service host dir>/authelia/data/config/configuration.yml` and checks that some
@@ -269,8 +281,8 @@ exempt from). Set it directly in `services.yaml`; there is no CLI flag for it.
 ## Commands
 
 ```
-splitdns [-C <dir>] add    service <name> --fqdn <f> --host <h> --backend <b> [--auth]
-splitdns [-C <dir>] update service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth[=false]]
+splitdns [-C <dir>] add    service <name> --fqdn <f> --host <h> --backend <b> [--auth-mode forward|oidc] [--auth-groups <g1,g2>]
+splitdns [-C <dir>] update service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth-mode forward|oidc|none] [--auth-groups <g1,g2>]
 splitdns [-C <dir>] remove service <name>
 splitdns [-C <dir>] sync   [--incremental | --complete]
 
@@ -335,6 +347,9 @@ services:
     host: appbox        # host that runs the service; Caddy site block goes in its dir
     backend: paperless:8000
     auth: forward       # optional; forward|oidc|none (or legacy true=forward)
+    # auth:               # object form when access is restricted to groups:
+    #   mode: forward     #   required: forward|oidc|none
+    #   groups: [admins]  #   optional; Authelia groups allowed access (OR'd)
     public_paths:       # optional; paths exempt from auth (only meaningful with auth: forward)
       - /health
 ```
