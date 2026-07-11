@@ -23,11 +23,6 @@ const (
 	DefaultCaddyDataDir  = "caddy/data"
 	DefaultCaddySitesDir = "caddy/data/sites"
 	DefaultCaddyTLSDir   = "caddy/data/tls"
-	// DefaultAutheliaConfig is the fixed convention path (relative to the
-	// auth_service host's repo directory) of the Authelia configuration file
-	// that declares OIDC clients. splitdns reads it read-only to verify that an
-	// OIDC client exists for each auth: oidc service; it never writes it.
-	DefaultAutheliaConfig = "authelia/data/config/configuration.yml"
 )
 
 // AuthMode is how a service authenticates. Three states:
@@ -50,40 +45,90 @@ const (
 	AuthOIDC    AuthMode = "oidc"
 )
 
-// UnmarshalYAML accepts either the legacy bool form (`auth: true` → forward,
-// `auth: false` → none) or the string form (`auth: forward` / `auth: oidc` /
-// `auth: none`). Back-compat: existing services.yaml files written with the
-// bool form still round-trip. An unrecognized string is treated as AuthNone
-// (fail safe: an unknown mode never silently renders as protected), and an
-// error is returned so the typo surfaces rather than being swallowed.
-func (m *AuthMode) UnmarshalYAML(value *yaml.Node) error {
+// parseAuthMode maps a mode string to an AuthMode. An unrecognized string is
+// treated as AuthNone (fail safe: an unknown mode never silently renders as
+// protected), and an error is returned so the typo surfaces rather than being
+// swallowed.
+func parseAuthMode(s string) (AuthMode, error) {
+	switch AuthMode(s) {
+	case AuthNone, "none":
+		return AuthNone, nil
+	case AuthForward:
+		return AuthForward, nil
+	case AuthOIDC:
+		return AuthOIDC, nil
+	default:
+		return AuthNone, fmt.Errorf("unknown auth mode %q — expected forward, oidc, or none", s)
+	}
+}
+
+// Auth is a service's auth declaration: a mode plus, optionally, the auth
+// provider group names allowed to access the service (used to generate the
+// provider's access-control rules; groups are meaningless with mode none).
+type Auth struct {
+	Mode   AuthMode
+	Groups []string
+}
+
+// authWire is the mapping (long) YAML form of Auth.
+type authWire struct {
+	Mode   string   `yaml:"mode"`
+	Groups []string `yaml:"groups,omitempty"`
+}
+
+// UnmarshalYAML accepts three forms, oldest first:
+//   - legacy bool  — `auth: true` → forward, `auth: false` → none
+//   - string       — `auth: forward` / `auth: oidc` / `auth: none`
+//   - mapping      — `auth: {mode: forward, groups: [admins]}`
+//
+// Back-compat: existing services.yaml files written with the bool or string
+// form still round-trip.
+func (a *Auth) UnmarshalYAML(value *yaml.Node) error {
 	// Try bool first (legacy `auth: true`/`auth: false`).
 	var b bool
 	if err := value.Decode(&b); err == nil {
 		if b {
-			*m = AuthForward
+			a.Mode = AuthForward
 		} else {
-			*m = AuthNone
+			a.Mode = AuthNone
 		}
 		return nil
 	}
+	// Mapping form: {mode: ..., groups: [...]}.
+	if value.Kind == yaml.MappingNode {
+		var w authWire
+		if err := value.Decode(&w); err != nil {
+			return fmt.Errorf("auth object form: %w", err)
+		}
+		if w.Mode == "" {
+			return fmt.Errorf("auth object form requires a mode (forward, oidc, or none)")
+		}
+		mode, err := parseAuthMode(w.Mode)
+		a.Mode, a.Groups = mode, w.Groups
+		return err
+	}
 	var s string
 	if err := value.Decode(&s); err != nil {
-		return fmt.Errorf("auth must be a bool or one of forward/oidc/none: %w", err)
+		return fmt.Errorf("auth must be a bool, one of forward/oidc/none, or a {mode, groups} mapping: %w", err)
 	}
-	switch AuthMode(s) {
-	case AuthNone, "none":
-		*m = AuthNone
-	case AuthForward:
-		*m = AuthForward
-	case AuthOIDC:
-		*m = AuthOIDC
-	default:
-		*m = AuthNone
-		return fmt.Errorf("unknown auth mode %q — expected forward, oidc, or none", s)
-	}
-	return nil
+	mode, err := parseAuthMode(s)
+	a.Mode = mode
+	return err
 }
+
+// MarshalYAML emits the SHORT string form (`auth: forward`) when no groups are
+// set, and the mapping form only when groups carry data — the YAML stays as
+// terse as before this field grew structure.
+func (a Auth) MarshalYAML() (any, error) {
+	if len(a.Groups) == 0 {
+		return string(a.Mode), nil
+	}
+	return authWire{Mode: string(a.Mode), Groups: a.Groups}, nil
+}
+
+// IsZero lets yaml's omitempty drop `auth:` entirely for unprotected services
+// (mode none, no groups), matching the pre-struct behavior.
+func (a Auth) IsZero() bool { return a.Mode == AuthNone && len(a.Groups) == 0 }
 
 // Host is one host in the homelab, owning a directory in the repo. The
 // directory defaults to the host's name (its key in the hosts map); the dir
@@ -138,9 +183,11 @@ type Service struct {
 	//   before proxying. The snippet content is repo-global (defaults.auth_snippet).
 	// - oidc means the app does OIDC itself; splitdns renders a plain
 	//   reverse_proxy and instead verifies an Authelia OIDC client exists.
-	// omitempty drops none (""); forward/oidc serialize as their string form.
-	// Legacy `auth: true` is accepted on load and re-emitted as `auth: forward`.
-	Auth AuthMode `yaml:"auth,omitempty"`
+	// omitempty (via Auth.IsZero) drops the unprotected zero value; forward/oidc
+	// serialize as their string form, or the {mode, groups} mapping when groups
+	// are set. Legacy `auth: true` is accepted on load and re-emitted as
+	// `auth: forward`.
+	Auth Auth `yaml:"auth,omitempty"`
 	// PublicPaths is a list of URL paths that are exempt from auth, served
 	// directly by the backend without going through the forward-auth gate.
 	// Only meaningful when Auth == AuthForward; ignored otherwise.

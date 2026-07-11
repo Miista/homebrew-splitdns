@@ -94,7 +94,7 @@ func TestBuild_AuthSnippetAlwaysPresent(t *testing.T) {
 func TestBuild_ServiceAuthImportsSnippet(t *testing.T) {
 	c := base()
 	c.AuthSnippetBody = "forward_auth https://auth.example.com {\n\turi /api/authz/forward-auth\n}"
-	c.Services["docs"] = config.Service{FQDN: "docs.example.com", Host: "appbox", Backend: "paperless:8000", Auth: config.AuthForward}
+	c.Services["docs"] = config.Service{FQDN: "docs.example.com", Host: "appbox", Backend: "paperless:8000", Auth: config.Auth{Mode: config.AuthForward}}
 
 	p := Build(c)
 	if len(p.Skipped) != 0 {
@@ -119,7 +119,7 @@ func TestBuild_ServiceAuthImportsSnippet(t *testing.T) {
 // authenticates itself, so splitdns adds no Caddy-level gate.
 func TestBuild_ServiceOIDCPlainProxy(t *testing.T) {
 	c := base()
-	c.Services["app"] = config.Service{FQDN: "app.example.com", Host: "appbox", Backend: "app:3000", Auth: config.AuthOIDC}
+	c.Services["app"] = config.Service{FQDN: "app.example.com", Host: "appbox", Backend: "app:3000", Auth: config.Auth{Mode: config.AuthOIDC}}
 
 	p := Build(c)
 	if _, skipped := p.Skipped["app"]; skipped {
@@ -145,7 +145,7 @@ func TestBuild_ServiceOIDCPlainProxy(t *testing.T) {
 func TestBuild_AuthLoopGuardOIDC(t *testing.T) {
 	c := base()
 	c.Defaults.AuthService = "portal"
-	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091", Auth: config.AuthOIDC}
+	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091", Auth: config.Auth{Mode: config.AuthOIDC}}
 	if _, skipped := Build(c).Skipped["portal"]; !skipped {
 		t.Fatalf("oidc auth_service should be skipped by the loop guard")
 	}
@@ -156,7 +156,7 @@ func TestBuild_AuthLoopGuardOIDC(t *testing.T) {
 func TestBuild_AuthLoopGuard(t *testing.T) {
 	c := base()
 	c.Defaults.AuthService = "portal"
-	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091", Auth: config.AuthForward}
+	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091", Auth: config.Auth{Mode: config.AuthForward}}
 
 	p := Build(c)
 	reason, skipped := p.Skipped["portal"]
@@ -294,5 +294,67 @@ func TestPinAuthSnippetToDisk(t *testing.T) {
 	// A path with no file on disk keeps the planned stub (base() has 2 hosts).
 	if !strings.Contains(p.Files[authSnippetKey][1].Content, "(auth) {\n}") {
 		t.Errorf("absent-on-disk path should keep stub, got %q", p.Files[authSnippetKey][1].Content)
+	}
+}
+
+// Groups grant access via the auth provider's generated rules; with mode none
+// there is no gate for them to apply to — report-but-proceed skip (design §7).
+func TestBuild_AuthGroupsOnNoneSkipped(t *testing.T) {
+	c := base()
+	c.Services["svc"] = config.Service{FQDN: "x.example.com", Host: "appbox", Backend: "a:1", Auth: config.Auth{Groups: []string{"admins"}}}
+	p := Build(c)
+	reason, ok := p.Skipped["svc"]
+	if !ok {
+		t.Fatalf("expected skip, got files: %+v", p.Files["svc"])
+	}
+	if !strings.Contains(reason, "auth groups set but auth mode is none") {
+		t.Errorf("wrong skip reason: %q", reason)
+	}
+}
+
+// The auth provider's access-control artifact (design §4.6) is planned on the
+// auth_service's host under the @auth-access synthetic owner — only when an
+// auth_service is set and some service actually uses forward auth (or oidc
+// with groups).
+func TestBuild_AccessControlArtifact(t *testing.T) {
+	c := base()
+	c.Defaults.AuthService = "portal"
+	c.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091"}
+	c.Services["docs"] = config.Service{FQDN: "docs.example.com", Host: "appbox", Backend: "paperless:8000", Auth: config.Auth{Mode: config.AuthForward, Groups: []string{"admins"}}}
+
+	p := Build(c)
+	files := p.Files[authAccessKey]
+	if len(files) != 1 {
+		t.Fatalf("expected 1 access-control file, got %+v", files)
+	}
+	wantPath := "appbox/authelia/data/config/splitdns.access_control.generated.yml"
+	if files[0].Path != wantPath {
+		t.Errorf("path %q, want %q", files[0].Path, wantPath)
+	}
+	if !strings.Contains(files[0].Content, "domain: 'docs.example.com'") ||
+		!strings.Contains(files[0].Content, "'group:admins'") {
+		t.Errorf("unexpected content:\n%s", files[0].Content)
+	}
+	if !IsSyntheticOwner(authAccessKey) {
+		t.Errorf("%q should be a synthetic owner", authAccessKey)
+	}
+}
+
+// No auth_service, or no forward/oidc-with-groups service → no artifact (a
+// previously generated one becomes an orphan and is GC'd).
+func TestBuild_AccessControlArtifactOmitted(t *testing.T) {
+	// No auth_service set.
+	c := base()
+	c.Services["docs"] = config.Service{FQDN: "docs.example.com", Host: "appbox", Backend: "paperless:8000", Auth: config.Auth{Mode: config.AuthForward}}
+	if files := Build(c).Files[authAccessKey]; files != nil {
+		t.Errorf("no auth_service → no artifact, got %+v", files)
+	}
+	// auth_service set but nothing to cover (oidc without groups).
+	c2 := base()
+	c2.Defaults.AuthService = "portal"
+	c2.Services["portal"] = config.Service{FQDN: "auth.example.com", Host: "appbox", Backend: "authelia:9091"}
+	c2.Services["app"] = config.Service{FQDN: "app.example.com", Host: "appbox", Backend: "app:3000", Auth: config.Auth{Mode: config.AuthOIDC}}
+	if files := Build(c2).Files[authAccessKey]; files != nil {
+		t.Errorf("no forward/oidc-with-groups service → no artifact, got %+v", files)
 	}
 }

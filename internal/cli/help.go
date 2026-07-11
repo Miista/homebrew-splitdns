@@ -17,7 +17,7 @@ type HelpTopic struct {
 var HelpTopics = []HelpTopic{
 	{"add service", `splitdns add service — declare a service and generate its DNS/Caddy config
 
-Usage: splitdns add service <name> --fqdn <fqdn> --host <host> --backend <name:port> [--auth-mode forward|oidc]
+Usage: splitdns add service <name> --fqdn <fqdn> --host <host> --backend <name:port> [--auth-mode forward|oidc] [--auth-groups <g1,g2>]
 
 Flags:
   -f, --fqdn <fqdn>       Public name the service is reached at (must match a declared domain).
@@ -28,13 +28,16 @@ Flags:
                           requires 'splitdns set auth-snippet <path>'. oidc renders a
                           PLAIN reverse_proxy (the app speaks OIDC itself — splitdns adds
                           no gate) and verifies read-only that an Authelia OIDC client exists.
+      --auth-groups <gs>  Comma-separated auth provider group names allowed access; flows into
+                          the generated access-control rules (multiple groups are OR'd).
+                          Requires an auth mode (forward or oidc).
       --auth              Back-compat shorthand for --auth-mode forward.
 
 Regenerates files immediately, then prints which hosts need 'splitdns apply'.`},
 
 	{"update service", `splitdns update service — change a service's fqdn, host, backend, or auth
 
-Usage: splitdns update service <name> [--fqdn <fqdn>] [--host <host>] [--backend <name:port>] [--auth-mode forward|oidc|none]
+Usage: splitdns update service <name> [--fqdn <fqdn>] [--host <host>] [--backend <name:port>] [--auth-mode forward|oidc|none] [--auth-groups <g1,g2>]
 
 Flags:
   -f, --fqdn <fqdn>       New public name (must match a declared domain).
@@ -42,6 +45,9 @@ Flags:
   -b, --backend <n:port>  New reverse_proxy upstream.
       --auth-mode <mode>  Set the auth mode: forward (import (auth) snippet), oidc
                           (plain reverse_proxy; app does OIDC itself), or none (clear).
+      --auth-groups <gs>  Set the comma-separated auth provider groups (OR'd in the
+                          generated access-control rules). '' clears them. Requires an
+                          auth mode (forward or oidc).
       --auth[=false]      Back-compat shorthand: --auth = forward, --auth=false = none.
 
 Only the given flags change; regenerated files and apply-hints follow.`},

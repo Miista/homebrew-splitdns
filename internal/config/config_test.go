@@ -189,8 +189,8 @@ func TestAuthMode_Parse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if svc.Auth != tc.want {
-				t.Errorf("auth %q → %q, want %q", tc.line, svc.Auth, tc.want)
+			if svc.Auth.Mode != tc.want {
+				t.Errorf("auth %q → %q, want %q", tc.line, svc.Auth.Mode, tc.want)
 			}
 		})
 	}
@@ -206,8 +206,8 @@ func TestAuthMode_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Services["legacy"].Auth != AuthForward {
-		t.Errorf("legacy true should read as forward, got %q", c.Services["legacy"].Auth)
+	if c.Services["legacy"].Auth.Mode != AuthForward {
+		t.Errorf("legacy true should read as forward, got %q", c.Services["legacy"].Auth.Mode)
 	}
 	if err := c.Save(); err != nil {
 		t.Fatal(err)
@@ -279,5 +279,72 @@ func TestLoadAuthSnippet_MissingKeepsBody(t *testing.T) {
 	}
 	if c.AuthSnippetBody != "last-good-body" {
 		t.Errorf("body must be preserved on error, got %q", c.AuthSnippetBody)
+	}
+}
+
+// The object form of auth ({mode, groups}) parses; groups round-trip in the
+// object form while a groupless mode re-emits the SHORT string form.
+func TestAuth_ObjectForm(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "services.yaml")
+	write(t, path, `hosts: {}
+domains: []
+defaults: {}
+services:
+  gated:
+    fqdn: a.example.com
+    host: h
+    backend: x:1
+    auth:
+      mode: forward
+      groups: [admins, family]
+  short:
+    fqdn: b.example.com
+    host: h
+    backend: x:1
+    auth:
+      mode: oidc
+`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := c.Services["gated"].Auth
+	if g.Mode != AuthForward || len(g.Groups) != 2 || g.Groups[0] != "admins" || g.Groups[1] != "family" {
+		t.Fatalf("gated parsed wrong: %+v", g)
+	}
+	if s := c.Services["short"].Auth; s.Mode != AuthOIDC || len(s.Groups) != 0 {
+		t.Fatalf("short parsed wrong: %+v", s)
+	}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	out := string(b)
+	// Groups set → object form survives the round trip.
+	if !strings.Contains(out, "mode: forward") || !strings.Contains(out, "- admins") {
+		t.Errorf("groups should round-trip in object form:\n%s", out)
+	}
+	// No groups → the terse string form, not a one-key mapping.
+	if !strings.Contains(out, "auth: oidc") {
+		t.Errorf("groupless mode should re-emit the short form:\n%s", out)
+	}
+}
+
+// Object form without a mode is a parse error (mode is required there), and an
+// unknown mode errors just like the string form.
+func TestAuth_ObjectFormErrors(t *testing.T) {
+	load := func(body string) error {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "services.yaml")
+		write(t, path, "hosts: {}\ndomains: []\ndefaults: {}\nservices:\n  s:\n    fqdn: s.example.com\n    host: h\n    backend: x:1\n    auth:\n"+body)
+		_, err := Load(path)
+		return err
+	}
+	if err := load("      groups: [admins]\n"); err == nil {
+		t.Error("object form without mode should error")
+	}
+	if err := load("      mode: bogus\n"); err == nil {
+		t.Error("object form with unknown mode should error")
 	}
 }

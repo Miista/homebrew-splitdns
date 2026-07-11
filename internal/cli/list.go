@@ -117,8 +117,8 @@ func printServiceTable(cfg *config.Config, svcNames []string) {
 	for _, name := range svcNames {
 		svc := cfg.Services[name]
 		auth := "-"
-		if svc.Auth != config.AuthNone {
-			auth = string(svc.Auth)
+		if svc.Auth.Mode != config.AuthNone {
+			auth = string(svc.Auth.Mode)
 			anyAuth = true
 		}
 		note := ""

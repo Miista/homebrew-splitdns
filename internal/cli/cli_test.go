@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"splitdns/internal/config"
+	"splitdns/internal/auth"
 )
 
 // mkdirs creates host directories inside the temp repo so `host add` (which
@@ -413,7 +413,7 @@ func TestRun_OIDCClientWarning(t *testing.T) {
 	}
 
 	// Authelia config present but no client for app → hard warning.
-	acfg := filepath.Join(dir, "appbox", config.DefaultAutheliaConfig)
+	acfg := filepath.Join(dir, "appbox", auth.Default().ConfigPath())
 	os.MkdirAll(filepath.Dir(acfg), 0o755)
 	os.WriteFile(acfg, []byte("identity_providers:\n  oidc:\n    clients:\n      - client_id: other\n        redirect_uris:\n          - https://other.example.com/accounts/oidc/callback\n"), 0o644)
 	out2 := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
@@ -455,3 +455,81 @@ func TestRun_AuthShorthandForward(t *testing.T) {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// --auth-groups sets groups on add/update (persisting the object YAML form),
+// clears with ”, and is refused without an auth mode (validate-before-persist)
+// — plus the generated access-control artifact lands on the auth host.
+func TestRun_AuthGroups(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
+	Run([]string{"-C", dir, "set", "auth-service", "authelia"})
+
+	// Groups without a mode: usage error, nothing persisted.
+	if code := Run([]string{"-C", dir, "add", "service", "bad", "--fqdn", "bad.example.com", "--host", "appbox", "--backend", "b:1", "--auth-groups", "admins"}); code != 2 {
+		t.Errorf("groups without mode should be a usage error, got %d", code)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, configName)); strings.Contains(string(b), "bad.example.com") {
+		t.Error("refused add must not persist")
+	}
+
+	if code := Run([]string{"-C", dir, "add", "service", "pihole", "--fqdn", "pihole.example.com", "--host", "appbox", "--backend", "pihole:80", "--auth-mode", "forward", "--auth-groups", "admins, family"}); code != 0 {
+		t.Fatalf("add with groups failed: %d", code)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, configName))
+	if !strings.Contains(string(b), "mode: forward") || !strings.Contains(string(b), "- admins") || !strings.Contains(string(b), "- family") {
+		t.Errorf("groups should persist in object form:\n%s", b)
+	}
+
+	// The access-control artifact is generated on the auth host.
+	ac, err := os.ReadFile(filepath.Join(dir, "appbox", "authelia/data/config/splitdns.access_control.generated.yml"))
+	if err != nil {
+		t.Fatalf("access-control artifact missing: %v", err)
+	}
+	if !strings.Contains(string(ac), "['group:admins']") || !strings.Contains(string(ac), "['group:family']") {
+		t.Errorf("artifact should OR the groups:\n%s", ac)
+	}
+
+	// Clearing the mode while groups remain is refused before persisting.
+	if code := Run([]string{"-C", dir, "update", "service", "pihole", "--auth-mode", "none"}); code != 2 {
+		t.Errorf("mode none with lingering groups should be refused, got %d", code)
+	}
+
+	// Clearing groups collapses back to the short YAML form.
+	if code := Run([]string{"-C", dir, "update", "service", "pihole", "--auth-groups", ""}); code != 0 {
+		t.Fatalf("clearing groups failed: %d", code)
+	}
+	b, _ = os.ReadFile(filepath.Join(dir, configName))
+	if !strings.Contains(string(b), "auth: forward") || strings.Contains(string(b), "- admins") {
+		t.Errorf("cleared groups should re-emit the short form:\n%s", b)
+	}
+}
+
+// An oidc service with groups warns until its Authelia client references the
+// generated authorization_policy (surfaced through the normal warning path).
+func TestRun_OIDCAuthorizationPolicyWarning(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
+	Run([]string{"-C", dir, "set", "auth-service", "authelia"})
+
+	acfg := filepath.Join(dir, "appbox", auth.Default().ConfigPath())
+	os.MkdirAll(filepath.Dir(acfg), 0o755)
+	os.WriteFile(acfg, []byte("identity_providers:\n  oidc:\n    clients:\n      - client_id: app\n        redirect_uris:\n          - https://app.example.com/accounts/oidc/callback\n"), 0o644)
+
+	out := captureStdout(t, func() {
+		Run([]string{"-C", dir, "add", "service", "app", "--fqdn", "app.example.com", "--host", "appbox", "--backend", "app:3000", "--auth-mode", "oidc", "--auth-groups", "users"})
+	})
+	if !contains(out, "authorization_policy: 'app'") {
+		t.Errorf("expected authorization_policy warning:\n%s", out)
+	}
+
+	// Client references the policy → warning clears.
+	os.WriteFile(acfg, []byte("identity_providers:\n  oidc:\n    clients:\n      - client_id: app\n        authorization_policy: app\n        redirect_uris:\n          - https://app.example.com/accounts/oidc/callback\n"), 0o644)
+	out2 := captureStdout(t, func() { Run([]string{"-C", dir, "list", "--all"}) })
+	if contains(out2, "authorization_policy") {
+		t.Errorf("warning should clear once the client references the policy:\n%s", out2)
+	}
+}

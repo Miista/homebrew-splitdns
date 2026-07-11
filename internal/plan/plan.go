@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"splitdns/internal/auth"
 	"splitdns/internal/config"
 	"splitdns/internal/render"
 )
@@ -168,7 +169,56 @@ func Build(c *config.Config) *Plan {
 		p.Files[authSnippetKey] = authFiles
 	}
 
+	// The auth provider's generated access-control artifact (design §4.6) —
+	// provider-owned content on the auth_service's host, synthetic-owner
+	// tracked like the @domain: TLS snippets. Emitted only when it has
+	// something to say (provider decides); otherwise absent and GC'd.
+	planAccessControl(c, p)
+
 	return p
+}
+
+// planAccessControl asks the auth provider for its access-control artifact
+// (path relative to the auth host's dir + content) covering the surviving
+// auth-enabled services, and adds it under the @auth-access synthetic owner.
+// No-op when defaults.auth_service is unset/invalid or the provider has no
+// forward/oidc services to cover — the half-configured cases are already
+// surfaced by the cli auth warnings, not here.
+func planAccessControl(c *config.Config, p *Plan) {
+	if c.Defaults.AuthService == "" {
+		return
+	}
+	authSvc, ok := c.Services[c.Defaults.AuthService]
+	if !ok {
+		return
+	}
+	hostM, ok := c.Hosts[authSvc.Host]
+	if !ok {
+		return
+	}
+	var svcs []auth.Service
+	for name := range p.Files {
+		if IsSyntheticOwner(name) {
+			continue
+		}
+		svc, ok := c.Services[name]
+		if !ok || svc.Auth.Mode == config.AuthNone {
+			continue
+		}
+		svcs = append(svcs, auth.Service{
+			Name:        name,
+			FQDN:        svc.FQDN,
+			Mode:        string(svc.Auth.Mode),
+			Groups:      svc.Auth.Groups,
+			PublicPaths: svc.PublicPaths,
+		})
+	}
+	relPath, content, ok := auth.Default().AccessControl(svcs)
+	if !ok {
+		return
+	}
+	path := filepath.Join(hostM.ResolvedDir(authSvc.Host), relPath)
+	p.Files[authAccessKey] = []File{{Path: path, Content: content}}
 }
 
 // planService validates one entry and returns its files or a skip reason.
@@ -208,8 +258,13 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 	// auth_service, e.g. an Authelia portal) must not also be protected by any
 	// auth mode, or every auth subrequest would recurse through the portal.
 	// Applies to both forward and oidc — the backend must be reachable un-gated.
-	if svc.Auth != config.AuthNone && name == c.Defaults.AuthService {
+	if svc.Auth.Mode != config.AuthNone && name == c.Defaults.AuthService {
 		return nil, fmt.Sprintf("auth refused: %q is the auth_service (the forward-auth backend) — protecting it would create a redirect loop", name)
+	}
+	// Groups grant access via the auth provider's generated rules; with mode
+	// none there is no gate for them to apply to — a half-formed intent.
+	if svc.Auth.Mode == config.AuthNone && len(svc.Auth.Groups) > 0 {
+		return nil, "auth groups set but auth mode is none — set an auth mode (forward|oidc) or clear the groups"
 	}
 
 	dnsPath := filepath.Join(dnsM.ResolvedDir(dnsHostName), config.DefaultDnsmasqDir, name+".generated.conf")
@@ -217,8 +272,7 @@ func planService(c *config.Config, name string, svc config.Service, hostNames []
 
 	return []File{
 		{Path: dnsPath, Content: render.DNSRecord(svc.FQDN, hostM.IP)},
-		{Path: caddyPath, Content: render.CaddySite(svc.FQDN, tlsImport, svc.Backend, svc.Auth, name == c.Defaults.AuthService, svc.PublicPaths)},
-		// NOTE: svc.Auth is now an AuthMode; forward → import auth, oidc/none → plain.
+		{Path: caddyPath, Content: render.CaddySite(svc.FQDN, tlsImport, svc.Backend, svc.Auth.Mode, name == c.Defaults.AuthService, svc.PublicPaths)},
 	}, ""
 }
 
@@ -234,11 +288,15 @@ const caddyImportKey = "@caddy-import"
 // splitdns.auth.generated.caddy auth snippet file.
 const authSnippetKey = "@auth-snippet"
 
+// authAccessKey is the synthetic plan/manifest key for the auth provider's
+// generated access-control artifact on the auth_service's host (design §4.6).
+const authAccessKey = "@auth-access"
+
 // IsSyntheticOwner reports whether a plan/manifest key is synthetic (not a
-// real service name). Covers domain TLS owners, the caddy-import owner, and the
-// auth-snippet owner.
+// real service name). Covers domain TLS owners, the caddy-import owner, the
+// auth-snippet owner, and the auth access-control owner.
 func IsSyntheticOwner(key string) bool {
-	return IsDomainOwner(key) || key == caddyImportKey || key == authSnippetKey
+	return IsDomainOwner(key) || key == caddyImportKey || key == authSnippetKey || key == authAccessKey
 }
 
 // PinAuthSnippetToDisk rewrites the planned content of every auth-snippet file

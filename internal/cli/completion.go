@@ -22,8 +22,8 @@ _splitdns() {
 
     local verbs="add update remove enable disable sync set list verify apply doctor measure version help completion"
     local nouns="service host domain"
-    local set_keys="dns-host auth-snippet"
-    local flags="--fqdn -f --host -H --backend -b --auth --all -a --fix --complete --incremental --chdir -C --help -h"
+    local set_keys="dns-host auth-snippet auth-service"
+    local flags="--fqdn -f --host -H --backend -b --auth --auth-mode --auth-groups --all -a --fix --complete --incremental --chdir -C --help -h"
 
     # First word: a verb (allow -C <dir> to precede it).
     if [[ $cword -eq 1 ]]; then
@@ -68,8 +68,8 @@ _splitdns() {
     local -a verbs nouns set_keys flags
     verbs=(add update remove enable disable sync set list verify apply doctor measure version help completion)
     nouns=(service host domain)
-    set_keys=(dns-host auth-snippet)
-    flags=(--fqdn -f --host -H --backend -b --auth --all -a --fix --complete --incremental --chdir -C --help -h)
+    set_keys=(dns-host auth-snippet auth-service)
+    flags=(--fqdn -f --host -H --backend -b --auth --auth-mode --auth-groups --all -a --fix --complete --incremental --chdir -C --help -h)
 
     if (( CURRENT == 2 )); then
         _describe 'command' verbs
