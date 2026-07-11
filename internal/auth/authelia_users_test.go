@@ -44,8 +44,8 @@ const usersDB = `users:
 func TestValidateUsers_GroupTypoAndUnreachableService(t *testing.T) {
 	cfgPath := writeUsersFixture(t, "authentication_backend:\n  file:\n    path: /config/users_database.yml\n", "users_database.yml", usersDB)
 	svcs := []Service{
-		{Name: "jellyfin", FQDN: "jf.example.com", Mode: ModeForward, Groups: []string{"media"}},   // ok
-		{Name: "grafana", FQDN: "gf.example.com", Mode: ModeOIDC, Groups: []string{"adminz"}},      // typo
+		{Name: "jellyfin", FQDN: "jf.example.com", Mode: ModeForward, Groups: []string{"media"}},              // ok
+		{Name: "grafana", FQDN: "gf.example.com", Mode: ModeOIDC, Groups: []string{"adminz"}},                 // typo
 		{Name: "paperless", FQDN: "pl.example.com", Mode: ModeForward, Groups: []string{"admins", "editors"}}, // editors unknown, admins populated
 	}
 	w := (authelia{}).ValidateUsers(cfgPath, svcs)

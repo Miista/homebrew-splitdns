@@ -119,7 +119,7 @@ func (authelia) HashUserPassword(password string) (string, error) {
 	return d.Encode(), nil
 }
 
-// UserSnippet renders the users_database.yml entry for a new user. splitdns
+// UserSnippet renders the users_database.yml entry for a new user. hemma
 // never writes that file — it is hand-owned and secret-bearing — so this is
 // paste-in instructions only.
 func (authelia) UserSnippet(username, email, digest string) string {

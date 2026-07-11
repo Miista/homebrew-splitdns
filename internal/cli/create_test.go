@@ -79,7 +79,9 @@ func TestCreateAppOIDC_UsesServiceFQDNAndNamedPolicy(t *testing.T) {
 func TestCreateAppOIDC_ServiceWithoutGroupsKeepsOneFactor(t *testing.T) {
 	dir := t.TempDir()
 	seedWithAuth(t, dir)
-	out := captureStdout(t, func() { Run([]string{"-C", dir, "create", "app", "oidc", "paperless", "/accounts/oidc/authelia/login/callback/"}) })
+	out := captureStdout(t, func() {
+		Run([]string{"-C", dir, "create", "app", "oidc", "paperless", "/accounts/oidc/authelia/login/callback/"})
+	})
 	if !strings.Contains(out, "authorization_policy: 'one_factor'") {
 		t.Errorf("service without groups should keep one_factor:\n%s", out)
 	}
