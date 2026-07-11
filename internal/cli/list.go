@@ -93,6 +93,11 @@ func cmdList(cfgPath string, args []string) int {
 	}
 
 	repoRoot := filepath.Dir(cfgPath)
+
+	// Auth-groups picture: union of the users database and services.yaml
+	// groups (hidden when no group exists on either side).
+	printGroupsSection(repoRoot, cfg)
+
 	for _, msg := range authConfigWarnings(repoRoot, cfg) {
 		fmt.Printf("%s %s\n", warn, msg)
 	}
