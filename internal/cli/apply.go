@@ -62,6 +62,49 @@ func cmdApply(repoRoot, cfgPath string, args []string) int {
 		return 0
 	}
 
+	// Resolve the auth half up front so validation can run before ANY restart.
+	var authName string
+	var authValidate, authReload []string
+	if name := cfg.Defaults.AuthService; name != "" {
+		if s, ok := cfg.Services[name]; ok && s.Host == self && !s.Disabled {
+			validate, reload := auth.Default().ApplyCommands(name)
+			if reload != nil {
+				authName, authValidate, authReload = name, validate, reload
+			}
+		}
+	}
+
+	const cf = "/etc/caddy/Caddyfile"
+
+	// Phase 1: validate everything this host owns BEFORE restarting anything.
+	// A bad Caddyfile or auth config must not cost a pihole restart (DNS blip)
+	// or leave the host half-applied — validation failures abort the whole
+	// apply with nothing touched.
+	if runsCaddy || authValidate != nil {
+		fmt.Printf("\n%s== Validate (%s) ==%s\n", boldOn, self, boldOff)
+		if runsCaddy {
+			// Validate provisions the TLS app, so a missing cert fails HERE
+			// rather than during the reload (verified: caddy v2.11 validate exit 1).
+			if !runQuiet("docker", "exec", caddyContainer, "caddy", "validate", "--config", cf, "--adapter", "caddyfile") {
+				fmt.Println("  " + cross + " caddy validate FAILED (missing cert or bad config?)")
+				fmt.Println()
+				errf("Validation failed — nothing was restarted or reloaded.")
+				return 1
+			}
+			fmt.Println("  " + tick + " caddy validate passes")
+		}
+		if authValidate != nil {
+			if !runQuiet(authValidate[0], authValidate[1:]...) {
+				fmt.Printf("  "+cross+" %s config validate FAILED\n", authName)
+				fmt.Println()
+				errf("Validation failed — nothing was restarted or reloaded.")
+				return 1
+			}
+			fmt.Printf("  "+tick+" %s config validate passes\n", authName)
+		}
+	}
+
+	// Phase 2: act. Only reached with every validation green.
 	failed := 0
 
 	if isDNS {
@@ -77,52 +120,21 @@ func cmdApply(repoRoot, cfgPath string, args []string) int {
 
 	if runsCaddy {
 		fmt.Printf("\n%s== Caddy (%s) ==%s\n", boldOn, self, boldOff)
-		const cf = "/etc/caddy/Caddyfile"
-		// Validate first — provisions the TLS app, so a missing cert fails HERE
-		// rather than during the reload (verified: caddy v2.11 validate exit 1).
-		if !runQuiet("docker", "exec", caddyContainer, "caddy", "validate", "--config", cf, "--adapter", "caddyfile") {
-			fmt.Println("  " + cross + " caddy validate FAILED — not reloading (missing cert or bad config?)")
-			failed++
+		if runQuiet("docker", "exec", caddyContainer, "caddy", "reload", "--config", cf) {
+			fmt.Println("  " + tick + " caddy reloaded")
 		} else {
-			fmt.Println("  " + tick + " caddy validate passes")
-			if runQuiet("docker", "exec", caddyContainer, "caddy", "reload", "--config", cf) {
-				fmt.Println("  " + tick + " caddy reloaded")
-			} else {
-				fmt.Println("  " + cross + " caddy reload FAILED")
-				failed++
-			}
+			fmt.Println("  " + cross + " caddy reload FAILED")
+			failed++
 		}
 	}
 
-	// Auth provider half: runs only on the host that runs the auth_service.
-	// Same validate-before-reload discipline as caddy; the provider supplies
-	// the commands (Authelia: config validate, then container restart — it has
-	// no hot reload).
-	if name := cfg.Defaults.AuthService; name != "" {
-		if s, ok := cfg.Services[name]; ok && s.Host == self && !s.Disabled {
-			provider := auth.Default()
-			validate, reload := provider.ApplyCommands(name)
-			if reload != nil {
-				fmt.Printf("\n%s== Auth (%s) ==%s\n", boldOn, name, boldOff)
-				valOK := true
-				if validate != nil {
-					if runQuiet(validate[0], validate[1:]...) {
-						fmt.Printf("  "+tick+" %s config validate passes\n", provider.Name())
-					} else {
-						fmt.Printf("  "+cross+" %s config validate FAILED — not reloading\n", provider.Name())
-						failed++
-						valOK = false
-					}
-				}
-				if valOK {
-					if runQuiet(reload[0], reload[1:]...) {
-						fmt.Printf("  "+tick+" %s reloaded\n", name)
-					} else {
-						fmt.Printf("  "+cross+" %s reload FAILED\n", name)
-						failed++
-					}
-				}
-			}
+	if authReload != nil {
+		fmt.Printf("\n%s== Auth (%s) ==%s\n", boldOn, authName, boldOff)
+		if runQuiet(authReload[0], authReload[1:]...) {
+			fmt.Printf("  "+tick+" %s reloaded\n", authName)
+		} else {
+			fmt.Printf("  "+cross+" %s reload FAILED\n", authName)
+			failed++
 		}
 	}
 
