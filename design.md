@@ -478,10 +478,20 @@ hemma disable service <name>
   allowed only if they agree, otherwise the conflict is refused (exit 2). `--auth-groups g1,g2`
   sets the auth-provider groups (requires a non-none mode). Then persists and reconciles
   (Incremental).
-- **`update`**: fails if the service does not exist, or if no field flags were given (no-op is
-  reported, not silently "succeeded"). Only explicitly-set fields are changed; `--auth-mode` /
-  `--auth[=false]` set or clear the auth mode (same conflict refusal as `add`), and
-  `--auth-groups` sets the groups (`''` clears). Reconciles (Incremental).
+- **`update`**: fails if the service does not exist. Only explicitly-set fields are changed;
+  `--auth-mode` / `--auth[=false]` set or clear the auth mode (same conflict refusal as `add`),
+  and `--auth-groups` sets the groups (`''` clears). Reconciles (Incremental).
+  **Interactive mode**: with zero flags, `update service` opens an editor instead (TTY-gated:
+  when stdin is not a terminal it refuses with a pointer at the flags, exit 2 — scripts that
+  forgot flags fail loud, never hang). Every field is pre-filled with the current value; host and
+  auth mode are pickers, and auth groups are a multi-select assembled from reality — the union of
+  groups on actual users (via the provider's `UserGroups`, members shown per group,
+  `(no members!)` flagged; users-db missing falls back to services-only) and groups referenced by
+  services' `auth.groups` — plus a `new group…` escape hatch. The `auth_service` itself gets no
+  auth fields (plan refuses self-gating anyway), just a read-only note. The editor is strictly a
+  flag collector: on submit it prints the changed fields (old → new; "no changes" and Ctrl-C exit
+  cleanly touching nothing) and funnels through the **same** validate-before-persist path and
+  single sync tail as the flags form — zero mutation logic of its own.
 - **`remove`**: deletes the entry from YAML, deletes that service's manifest-tracked files, and
   drops it from the manifest. A removal still needs a subsequent `apply` on the affected hosts to
   drop the vhost/record from the running daemons.

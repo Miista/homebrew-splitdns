@@ -347,7 +347,7 @@ hemma            completion <bash|zsh>
 | Command | Behavior |
 | --- | --- |
 | `add` | Fail if name/fqdn already exists. Mutate YAML, then regenerate. `--auth-mode forward` (or the `--auth` shorthand) opts the service into the `(auth)` snippet (imports it). |
-| `update` | Fail if the service doesn't exist. Only the flags you pass are changed. Then regenerate. `--auth-mode` / `--auth[=false]` sets or clears the auth mode. |
+| `update` | Fail if the service doesn't exist. Only the flags you pass are changed. Then regenerate. `--auth-mode` / `--auth[=false]` sets or clears the auth mode. With **no flags** (and stdin a terminal) an interactive editor opens instead: every field pre-filled with current values, host/auth-mode pickers, and auth groups as a multi-select of the groups that actually exist — on real users (members shown per group, `(no members!)` flagged) and on other services — plus a `new group…` escape hatch. On submit it prints the changed fields (old → new) and runs the exact same validation/sync path as the flags form; no changes or Ctrl-C touches nothing. Non-interactive callers must pass flags. |
 | `remove` | Drop the service from YAML, delete its tracked files, drop it from the manifest. |
 | `disable` / `enable` | `disable` keeps the entry in YAML but deletes its generated files immediately; `enable` clears the flag and regenerates. |
 | `add host` / `add domain` | Declare a host / domain. `add host <name> <ip>` (the name is its repo directory, which must already exist; the IP must be unique). `add domain <name>` — hemma generates the domain's TLS snippet on every host immediately. |

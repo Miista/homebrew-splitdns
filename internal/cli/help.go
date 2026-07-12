@@ -39,6 +39,15 @@ Regenerates files immediately, then prints which hosts need 'hemma apply'.`},
 
 Usage: hemma update service <name> [--fqdn <fqdn>] [--host <host>] [--backend <name:port>] [--auth-mode forward|oidc|none] [--auth-groups <g1,g2>]
 
+With no flags (and stdin a terminal) an interactive editor opens instead:
+every field is pre-filled with the service's current values (Enter keeps
+them), the host and auth mode are pickers, and auth groups are a multi-select
+built from the groups that actually exist — on users in the auth provider's
+users database (members shown per group) and on other services — plus a
+'new group…' escape hatch. On submit it prints the changed fields (old → new)
+and runs the exact same validation and sync path as the flags form; 'no
+changes' or Ctrl-C touches nothing. Non-interactive callers must pass flags.
+
 Flags:
   -f, --fqdn <fqdn>       New public name (must match a declared domain).
   -H, --host <host>       New host (repo directory).
