@@ -352,11 +352,11 @@ access_control:
   default_policy: 'deny'
   rules:
     # per forward service: one bypass rule per public_paths entry first
-    # (Authelia rules are first-match, mirroring the Caddy handle ordering)…
+    # (Authelia rules are first-match, so exemptions must precede the gate)…
     - domain: 'status.example.com'
       resources:
-        - '^/health([/?].*)?$'     # public_paths entry translated to a regex:
-      policy: 'bypass'             # literal escaped, trailing /* → "and below", query allowed
+        - '^/health(\?.*)?$'       # public_paths entry translated to a regex (see below)
+      policy: 'bypass'
     # …then the access rule:
     - domain: 'pihole.example.com'
       policy: 'one_factor'
@@ -373,6 +373,19 @@ identity_providers:
             subject:
               - 'group:users'
 ```
+
+**Bypass regex semantics.** These regexes are the **actual** public_paths gate — Caddy renders
+no per-path branches (§4.5), so precision here matters. Authelia matches `resources` against
+the request path *including* the query string, hence the optional query tail on both shapes
+(regex meta in the literal path is escaped):
+
+- `/health` (no trailing `/*`) → `^/health(\?.*)?$` — the **exact** path only, query allowed;
+  `/health/live` is NOT exempt.
+- `/api/v1/*` → `^/api/v1([/?].*)?$` — the path itself **and anything below**, query allowed.
+
+(**Changed from the original design**, which emitted the subtree shape for every entry — a
+mirror of Caddy's path matcher was good enough when Caddy was the gate; now that these rules
+enforce, a bare path must not silently exempt its whole subtree.)
 
 **Subject OR semantics** (easy to get backwards): in Authelia, a subject that is a string or a
 flat list of strings is an **AND** of criteria; **OR** requires a list of *lists*. Membership in

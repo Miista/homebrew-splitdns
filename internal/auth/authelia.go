@@ -79,7 +79,8 @@ func (authelia) AccessControl(services []Service) (path, content string, ok bool
 		for _, s := range forward {
 			// Bypass rules first (one per public path), then the access rule —
 			// Authelia rules are first-match, so the exemptions must precede
-			// the gate, mirroring the Caddy handle-block ordering (§4.5).
+			// the gate. These bypass rules are the ONLY public_paths
+			// enforcement; Caddy renders no per-path branches (§4.5).
 			for _, p := range s.PublicPaths {
 				fmt.Fprintf(&b, "    - domain: %s\n", yq(s.FQDN))
 				b.WriteString("      resources:\n")
@@ -131,13 +132,20 @@ func writeSubject(b *strings.Builder, indent string, groups []string) {
 }
 
 // pathResource translates a public_paths entry into an Authelia resources
-// regex, mirroring the Caddy path-matcher semantics render.CaddySite relies
-// on: the literal path (regex meta escaped), a trailing /* meaning "and
-// anything below", and an optional query string. e.g. /health →
-// ^/health([/?].*)?$.
+// regex. These regexes ARE the auth exemption — Caddy does not render
+// public_paths at all (design §4.5), so the bypass gate lives here and only
+// here. Authelia matches resources against the path INCLUDING the query
+// string, hence the optional query tail on both shapes:
+//
+//	/health   → ^/health(\?.*)?$        exact path only, query allowed
+//	/api/*    → ^/api([/?].*)?$         the path itself and anything below
+//
+// Regex meta in the literal path is escaped.
 func pathResource(p string) string {
-	base := strings.TrimSuffix(p, "/*")
-	return "^" + regexp.QuoteMeta(base) + "([/?].*)?$"
+	if base, ok := strings.CutSuffix(p, "/*"); ok {
+		return "^" + regexp.QuoteMeta(base) + "([/?].*)?$"
+	}
+	return "^" + regexp.QuoteMeta(p) + `(\?.*)?$`
 }
 
 // yq single-quotes a YAML scalar (Authelia docs style), doubling any embedded

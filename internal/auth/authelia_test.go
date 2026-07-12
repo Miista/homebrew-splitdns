@@ -43,7 +43,7 @@ func TestAuthelia_AccessControl(t *testing.T) {
 		"        - 'group:admins'\n" +
 		"    - domain: 'status.example.com'\n" +
 		"      resources:\n" +
-		"        - '^/health([/?].*)?$'\n" +
+		"        - '^/health(\\?.*)?$'\n" +
 		"      policy: 'bypass'\n" +
 		"    - domain: 'status.example.com'\n" +
 		"      policy: 'one_factor'\n"
@@ -71,13 +71,16 @@ func TestAuthelia_MultipleGroupsAreORed(t *testing.T) {
 	}
 }
 
-// A trailing /* on a public path means "and everything below" — the resource
-// regex mirrors that; regex meta in the literal path is escaped.
+// These regexes ARE the auth exemption (Caddy renders no public_paths gate),
+// so the two shapes matter: without a trailing /* the entry is the exact path
+// only (query string still allowed — Authelia matches path+query); with /*
+// it is the path itself and everything below. Regex meta in the literal path
+// is escaped.
 func TestAuthelia_PathResourceTranslation(t *testing.T) {
 	cases := map[string]string{
-		"/health":    "^/health([/?].*)?$",
+		"/health":    `^/health(\?.*)?$`,
 		"/api/*":     "^/api([/?].*)?$",
-		"/f.o (x)":   `^/f\.o \(x\)([/?].*)?$`,
+		"/f.o (x)":   `^/f\.o \(x\)(\?.*)?$`,
 		"/metrics/*": "^/metrics([/?].*)?$",
 	}
 	for in, want := range cases {
