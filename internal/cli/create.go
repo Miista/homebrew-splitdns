@@ -1,12 +1,13 @@
 package cli
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"golang.org/x/term"
 
 	"hemma/internal/auth"
@@ -129,39 +130,47 @@ func cmdCreateUser(args []string) int {
 	}
 	username := args[0]
 
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		errf("create user is interactive — run it from a terminal.")
 		return 1
 	}
 
-	email, err := promptLine("Email: ")
-	if err != nil {
+	// huh form in place of the old x/term prompts: email plain, password
+	// hidden (EchoModePassword) and entered twice. Validation happens inline
+	// (re-prompt on error) with the same messages. The form renders on stderr
+	// so stdout carries only the printed snippet (print-only contract).
+	var email, password, confirm string
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title("Email").Value(&email).Validate(func(s string) error {
+			if !strings.Contains(s, "@") {
+				return errors.New("enter a valid email address")
+			}
+			return nil
+		}),
+		huh.NewInput().Title("Password").EchoMode(huh.EchoModePassword).
+			Value(&password).Validate(func(s string) error {
+			if s == "" {
+				return errors.New("the password must not be empty")
+			}
+			return nil
+		}),
+		huh.NewInput().Title("Retype password").EchoMode(huh.EchoModePassword).
+			Value(&confirm).Validate(func(s string) error {
+			if s != password {
+				return errors.New("the passwords do not match")
+			}
+			return nil
+		}),
+	)).WithOutput(os.Stderr)
+	if err := form.Run(); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			fmt.Fprintln(os.Stderr, "Aborted — no user created.")
+			return 0
+		}
 		errf("%v", err)
 		return 1
 	}
-	if !strings.Contains(email, "@") {
-		errf("Enter a valid email address.")
-		return 1
-	}
-	password, err := promptPassword(fd, "Password: ")
-	if err != nil {
-		errf("%v", err)
-		return 1
-	}
-	if password == "" {
-		errf("The password must not be empty.")
-		return 1
-	}
-	confirm, err := promptPassword(fd, "Retype password: ")
-	if err != nil {
-		errf("%v", err)
-		return 1
-	}
-	if password != confirm {
-		errf("The passwords do not match.")
-		return 1
-	}
+	email = strings.TrimSpace(email)
 
 	provider := auth.Default()
 	digest, err := provider.HashUserPassword(password)
@@ -183,28 +192,6 @@ func titleCase(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-// promptLine prints prompt to stderr and reads one trimmed line from stdin.
-func promptLine(prompt string) (string, error) {
-	fmt.Fprint(os.Stderr, prompt)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil {
-		return "", fmt.Errorf("read input: %w", err)
-	}
-	return strings.TrimSpace(line), nil
-}
-
-// promptPassword prints prompt to stderr and reads a line with echo disabled
-// (golang.org/x/term), emitting the newline the suppressed echo swallowed.
-func promptPassword(fd int, prompt string) (string, error) {
-	fmt.Fprint(os.Stderr, prompt)
-	b, err := term.ReadPassword(fd)
-	fmt.Fprintln(os.Stderr)
-	if err != nil {
-		return "", fmt.Errorf("read password: %w", err)
-	}
-	return string(b), nil
 }
 
 // usersDBWarnings runs the provider's read-only users-database cross-checks
