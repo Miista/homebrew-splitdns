@@ -9,7 +9,9 @@ and Caddy site blocks for a homelab, from a single declarative `services.yaml` c
 git repo. It is **reconcile-and-report** (Terraform/`make` style): every sync re-derives all output from
 the YAML. Sync and the mutation commands only write files into the local repo checkout; making them live
 is the separate `hemma apply` command, run per host, which restarts/reloads that host's local daemons
-(pihole / caddy / the auth provider). Nothing ever SSHes anywhere.
+(pihole / caddy / the auth provider). The only command that SSHes is `hemma deploy` — the deliberate
+exception to the no-SSH non-goal (design §6.8/§12) — which fans out `git pull --ff-only` then
+`hemma apply` across the fleet (remotes first, self last); everything else never SSHes.
 `design.md` is the authoritative design document; read it before non-trivial changes.
 Section references in code comments (`design §6`, etc.) point at it.
 

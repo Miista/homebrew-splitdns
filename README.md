@@ -12,8 +12,10 @@ for a homelab, from a single declarative `services.yaml` committed to the homela
 `hemma` is **reconcile-and-report**, Terraform/`make` style: every reconcile re-derives all
 output from the YAML so the generated files match the declared state. The mutation commands only
 write files into your repo checkout; making them live is a separate step — `hemma apply`, run
-per host, restarts/reloads that host's local daemons (pihole, caddy, the auth provider). Nothing
-SSHes anywhere. Deployment stays `git pull` then `hemma apply` per machine.
+per host, restarts/reloads that host's local daemons (pihole, caddy, the auth provider).
+Deployment stays `git pull` then `hemma apply` per machine — and `hemma deploy` automates
+exactly that fan-out over ssh (the one command that SSHes; see
+[Deploying the fleet](#deploying-the-fleet-hemma-deploy)).
 
 See [`design.md`](design.md) for the full design rationale.
 
@@ -331,7 +333,8 @@ hemma [-C <dir>] remove service <name>
 hemma [-C <dir>] enable  service <name>
 hemma [-C <dir>] disable service <name>
 
-hemma [-C <dir>] add    host   <name> <ip>
+hemma [-C <dir>] add    host   <name> <ip> [--ssh <dest>]
+hemma [-C <dir>] update host   <name> [--ip <ip>] [--ssh <dest>]
 hemma [-C <dir>] remove host   <name>
 hemma [-C <dir>] add    domain <name>
 hemma [-C <dir>] remove domain <name>
@@ -345,6 +348,7 @@ hemma [-C <dir>] create user <username>
 hemma [-C <dir>] list   [--all]
 hemma [-C <dir>] verify [--all] [<fqdn>]
 hemma [-C <dir>] apply
+hemma [-C <dir>] deploy [<host> ...]
 hemma [-C <dir>] doctor [--fix]
 hemma [-C <dir>] measure [--compare] [-n <runs>] <service|fqdn|url>
 hemma [-C <dir>] version
@@ -359,7 +363,8 @@ hemma            completion <bash|zsh>
 | `update` | Fail if the service doesn't exist. Only the flags you pass are changed. Then regenerate. `--auth-mode` / `--auth[=false]` sets or clears the auth mode. With **no flags** (and stdin a terminal) an interactive editor opens instead: every field pre-filled with current values, host/auth-mode pickers, and auth groups as a multi-select of the groups that actually exist — on real users (members shown per group, `(no members!)` flagged) and on other services — plus a `new group…` escape hatch. On submit it prints the changed fields (old → new) and runs the exact same validation/sync path as the flags form; no changes or Ctrl-C touches nothing. Non-interactive callers must pass flags. |
 | `remove` | Drop the service from YAML, delete its tracked files, drop it from the manifest. |
 | `disable` / `enable` | `disable` keeps the entry in YAML but deletes its generated files immediately; `enable` clears the flag and regenerates. |
-| `add host` / `add domain` | Declare a host / domain. `add host <name> <ip>` (the name is its repo directory, which must already exist; the IP must be unique). `add domain <name>` — hemma generates the domain's TLS snippet on every host immediately. |
+| `add host` / `add domain` | Declare a host / domain. `add host <name> <ip>` (the name is its repo directory, which must already exist; the IP must be unique; `--ssh <dest>` optionally sets the ssh destination `deploy` uses — default: the name). `add domain <name>` — hemma generates the domain's TLS snippet on every host immediately. |
+| `update host` | Change a host's `--ip` (regenerates every DNS record pointing at it) and/or `--ssh` destination (`-` clears it back to the host name). Only the flags you pass change. |
 | `remove host` / `remove domain` | **Refuses** while any service still references it (and lists the blockers). Idempotent otherwise. |
 | `set dns-host <name>` | Set the default resolver host (the one whose dnsmasq receives records). |
 | `set auth-snippet <path>` | Set the `(auth)` snippet source (a repo-relative Caddy file holding any auth directive). Pass `-` to clear it (regenerates an empty no-op stub). See [Forward auth](#forward-auth-optional). |
@@ -368,6 +373,7 @@ hemma            completion <bash|zsh>
 | `create user` | Interactively hash a new user's password (argon2id) + print the users-database snippet. Print-only. |
 | `list` | The overview of the home: hosts, domains, services (with an `AUTH` column showing `forward` / `oidc` / `-`), and the auth **groups** — each group's users and the services restricted to it, including orphans (a group with services but no users, or users but no services). The services list defaults to those on **this** host (matched by local IP); `--all` shows every host. Read-only. |
 | `apply` | Make synced config live on THIS host: restart pihole (resolver), `caddy validate` + reload (service hosts), and validate + restart the auth provider (auth host). Refuses on repo drift. Run on each host. |
+| `deploy` | Push-based fan-out over ssh: `git pull --ff-only` on every target host — **any** failure aborts the whole deploy with nothing applied — then `hemma apply` per host, remotes first and this host last. Targets default to every host with a role; names restrict. Refuses if the local repo is dirty or unpushed. See [Deploying the fleet](#deploying-the-fleet-hemma-deploy). |
 | `doctor [--fix]` | Audit the repo: gitignored generated files, Caddyfile imports, generated-file drift, auth config consistency (OIDC clients registered, policies referenced, groups exist on real users). `--fix` reconciles files, .gitignore, and legacy-name migration. |
 | `measure` | Time the request breakdown (dns/connect/tls/ttfb) for a service or URL; `--compare` A/Bs split-horizon vs public. Read-only. |
 | `completion <bash\|zsh>` | Print a static shell completion script to stdout (verbs, nouns, and flags). See [Shell completions](#shell-completions). |
@@ -390,7 +396,7 @@ are not preserved — document intent in this README, not in the YAML.
 ```yaml
 hosts:
   resolver: { ip: 192.0.2.1 }   # the host's name is its repo directory
-  appbox:   { ip: 192.0.2.2 }
+  appbox:   { ip: 192.0.2.2, ssh: admin@appbox.lan }  # optional: verbatim ssh destination for `hemma deploy` (default: the name)
 
 domains:
   - example.com   # TLS snippet + cert path are derived from the name
@@ -490,6 +496,33 @@ hemma apply     # on each host after a pull
 hemma verify    # assert A == host IP and AAAA == :: against the running resolver
 ```
 
+## Deploying the fleet: `hemma deploy`
+
+`hemma deploy [<host> ...]` automates that per-machine loop from one seat — it is the one
+command that SSHes. Deploying means **"make the fleet match origin"**, and it runs exactly the
+manual workflow's two commands per host, in two phases:
+
+1. **Pull everywhere** — `git -C ~/docker pull --ff-only` on every target host (over
+   `ssh -o BatchMode=yes`, or locally for the host you're on). `--ff-only` fast-forwards or
+   refuses touching nothing, so this phase is **all-or-nothing**: any failure — a diverged
+   checkout (local commits/edits origin doesn't have; hosts must not fork the repo — reconcile
+   manually), a dirty remote tree, an unreachable host, ssh auth — **aborts the entire deploy**
+   before anything is applied. No runtime state has changed anywhere; a pulled-but-not-applied
+   checkout is just the normal intermediate state of the manual workflow. If hosts end up on
+   *different* commits (a push raced between the pulls), that aborts too — re-run.
+2. **Apply everywhere** — `hemma apply` per host, **remotes first, this host last** (a resolver
+   restart mid-fan-out would break DNS-resolved ssh to the remaining hosts). Each host's apply
+   validates before restarting anything; a failure on one host is reported and the fan-out
+   continues to the rest — restarts can't be rolled back, so fix the host and re-run (apply is
+   idempotent). Exit is non-zero with a per-host summary.
+
+Targets default to every host with a role (it runs a service, or is the `dns_host`); pass names
+to restrict. Each host is reached at its optional `ssh:` destination in `services.yaml` — a
+verbatim ssh value (an ssh_config alias, `user@host`, …; ports/users/keys belong in ssh_config),
+defaulting to the host's name — set via `add host --ssh` / `update host --ssh`. The remote repo
+path is the tool's default `~/docker`. deploy refuses up front if your **local** repo is dirty
+or has unpushed commits: origin must already carry the change you're deploying.
+
 ## Development
 
 ```sh
@@ -512,9 +545,11 @@ Package layout (`internal/`):
 
 ## Non-goals
 
-No SSH/orchestration (`apply` acts only on the host it runs on), no backend health checks, no
-per-file checksums, no editing of machines' main Caddyfiles, and no writing of the auth
-provider's own config or users database (`create` prints snippets; you paste them).
+No general SSH/orchestration — `apply` acts only on the host it runs on, and `deploy` is the
+one deliberate exception (it SSHes to run exactly `git pull --ff-only` + `hemma apply`, nothing
+more). No backend health checks, no per-file checksums, no editing of machines' main
+Caddyfiles, and no writing of the auth provider's own config or users database (`create` prints
+snippets; you paste them).
 
 ## License
 

@@ -17,13 +17,14 @@ declarative source of truth committed to a git repository.
 
 - The homelab is a **single git repository**, one directory per machine
   (e.g. `pi/`, `optiplex/`).
-- Deployment is **`git pull`** per machine, then a live-reload step. This tool does **not**
-  deploy or SSH anywhere — it only writes files into the local repo checkout. Making the
+- Deployment is **`git pull`** per machine, then a live-reload step. The generators do **not**
+  deploy or SSH anywhere — they only write files into the local repo checkout. Making the
   written config *live* is a separate, explicit step run on each host: `hemma apply` (§6.3),
   which restarts Pi-hole / validates + reloads Caddy / validates + restarts the auth
   provider. (This is a change from the original
   design, which left reload to an external deploy wrapper; `apply` folds that in as a command
-  but still runs per-host and never SSHes.)
+  but still runs per-host and never SSHes.) `hemma deploy` (§6.8) automates that per-machine
+  pull + apply fan-out over ssh — the one deliberate exception to the no-SSH non-goal (§12).
 - A service's artifacts fan out across **two machine directories**: its DNS record lives on
   the resolver host (`defaults.dns_host`), its Caddy site block lives on the host that runs the
   service. Therefore the source of truth must be **repo-level**, not per-machine.
@@ -67,7 +68,7 @@ carry, so a list is cleaner than a map of empty objects.
 ```yaml
 hosts:
   pi:       { ip: 192.0.2.1 }   # a host's name is its repo directory; `dir:` overrides only if they differ
-  optiplex: { ip: 192.0.2.2 }
+  optiplex: { ip: 192.0.2.2, ssh: admin@optiplex.lan }  # optional verbatim ssh(1) destination for `deploy` (§6.8); defaults to the name
 
 domains:
   - example.com   # TLS snippet name + cert path are derived from the domain
@@ -533,7 +534,8 @@ pointing at `add` and exit non-zero. `add` is exempt — it creates `services.ya
 ### 6.2 Building-block commands (host, domain) and `set`
 
 ```
-hemma add    host   <name> <ip>
+hemma add    host   <name> <ip> [--ssh <dest>]
+hemma update host   <name> [--ip <ip>] [--ssh <dest>]
 hemma remove host   <name>
 hemma add    domain <name>
 hemma remove domain <name>
@@ -545,6 +547,14 @@ hemma set    auth-service <name>          ('-' clears)
 - **`add host <name> <ip>`**: both positional. The IP must be a valid address and unique across
   hosts. A host's name **is** its repo directory; that directory must already exist (a name with
   no matching directory is treated as a typo and rejected). Fails loud if the host exists.
+  `--ssh <dest>` optionally sets the host's verbatim ssh(1) destination for `deploy` (§6.8);
+  absent, the destination defaults to the host's name.
+- **`update host <name> [--ip <ip>] [--ssh <dest>]`**: the update-service pattern applied to
+  hosts — validate before persisting, only explicitly passed flags change. `--ip` must be valid
+  and unique across hosts. `--ssh -` (or an empty string) clears the field back to its default
+  (the host name). Reconcile mode by mutation shape: a **changed ip** syncs **Complete** (every
+  DNS record embedding the ip is rewritten, orphans GC'd); an ssh-only change touches nothing
+  generated, so **Incremental** suffices.
 - **`add domain <name>`**: name only; the TLS snippet name and cert path are derived (§4.3).
   Fails loud if the domain exists.
 - **`set dns-host <name>`**: sets `defaults.dns_host`. The named host must already exist. Without
@@ -744,6 +754,55 @@ hemma completion <bash|zsh>    (prints a static shell completion script to stdou
 hemma -C, --chdir <dir> ...
 ```
 
+### 6.8 Fleet deploy: `deploy`
+
+```
+hemma deploy [<host> ...]
+```
+
+`deploy` is the push-based fan-out: **make the fleet match origin**. It is the one deliberate
+exception to the "no SSH/orchestration" non-goal (§12) — the precedent being `apply`, which
+relaxed the original "no reloads" non-goal the same way: an explicit command that folds a
+per-host manual step into the tool without changing what the step *is*. Per host it runs
+exactly the two commands of the manual workflow, `git pull --ff-only` then `hemma apply`, in
+two strictly ordered phases:
+
+- **Targets**: all hosts with a *role* — they run at least one non-disabled service, or are the
+  `dns_host` (role-less spare hosts have nothing to apply). Passing names restricts the set
+  (unknown names refused). A host is reached via `ssh -o BatchMode=yes <dest>` (BatchMode: no
+  interactive prompts from inside a fan-out; auth failures then abort in phase 1, where they are
+  harmless), where `<dest>` is the host's optional `ssh:` field — a **verbatim** ssh(1)
+  destination (an ssh_config alias, `user@host`, anything ssh accepts; deliberately no
+  ssh_user/ssh_port fields — ssh_config owns that machinery) — defaulting to the host's **name**
+  (consistent with the name == repo-dir convention). The remote repo path is the tool's default
+  `~/docker` (baked-in convention, no per-host override). A target whose IP matches the local
+  machine (the same `localHost` rule `apply` uses) runs its commands **locally** — no
+  ssh-to-self.
+- **Preflight**: refuses up front if the **local** repo is dirty or has unpushed commits.
+  Deploying means "make the fleet match origin", so origin must already carry the intent.
+- **Phase 1 — pull everywhere, all-or-nothing at the git layer**: per host,
+  `git -C ~/docker pull --ff-only`. `--ff-only` is the safe primitive: it fast-forwards or
+  refuses touching nothing. **Any** failure — non-ff/divergence (the host has local commits or
+  edits origin doesn't have; boxes must not fork the repo — reconcile manually), a dirty remote
+  tree, an unreachable host, ssh auth — prints the host and the git/ssh output and **aborts the
+  entire deploy**: phase 2 never starts and no runtime state changed anywhere.
+  Pulled-but-not-applied checkouts are the normal intermediate state of the manual workflow, so
+  an abort leaves nothing to undo. After the pulls, `git rev-parse HEAD` per host must agree —
+  hosts on *different* commits (a push raced between the pulls) also abort: re-run deploy.
+- **Phase 2 — apply, per-host best-effort, remotes first and self LAST**: per host,
+  `hemma apply` (which does its own validate-before-restart, §6.3). Self goes last because
+  applying on self can restart the resolver, and a resolver bounce mid-fan-out would break
+  DNS-resolved ssh to the remaining hosts — breadth-first: converge the leaves, bounce the
+  resolver once at the end. An apply failure on one host is reported and the fan-out
+  **continues** (each host's apply is internally consistent; stopping mid-fan-out just leaves a
+  less converged fleet), exiting non-zero with a per-host status summary
+  (`<host>: applied | failed-apply`). Honest caveat: unlike the git layer, this phase is not
+  all-or-nothing — restarts that already happened cannot be rolled back; the remedy is to fix
+  the failing host and re-run (`apply` is idempotent).
+
+Output is streamed per host under bold `== <host> ==` section headers (matching `apply`'s
+style), grouped under `== Phase 1: pull ==` / `== Phase 2: apply ==` phase headers.
+
 ## 7. Validation (per-entry, non-fatal)
 
 The planner (`plan.Build`) validates each service independently, collecting errors rather than
@@ -856,8 +915,14 @@ where `<host-dir>` is the host's `ResolvedDir` (its `dir:` or, by convention, it
 
 ## 12. Explicit non-goals
 
-- No SSH/orchestration. The tool writes into the local repo checkout only; `apply` acts on the
-  local host's daemons and must be run per-host.
+- No general SSH/orchestration. The generators write into the local repo checkout only; `apply`
+  acts on the local host's daemons and must be run per-host. `deploy` (§6.8) is the **one
+  deliberate exception** — an explicit command that SSHes to the fleet using verbatim ssh(1)
+  destinations (`hosts[].ssh`, defaulting to the host name) to run exactly the manual workflow
+  (`git pull --ff-only`, then `hemma apply`); nothing else ever SSHes, and hemma still never
+  orchestrates anything beyond those two commands. (This mirrors how the original "no reloads"
+  non-goal was relaxed when `apply` was added: fold the explicit per-host step into a command
+  without widening the tool's authority.)
 - No reachability/health checks of backends (only `name:port` shape validation).
 - No per-file checksums or "you hand-edited my output" gate (drift *reports* modified files; it
   does not block except at `apply`).
