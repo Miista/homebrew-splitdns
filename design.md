@@ -20,7 +20,8 @@ declarative source of truth committed to a git repository.
 - Deployment is **`git pull`** per machine, then a live-reload step. This tool does **not**
   deploy or SSH anywhere — it only writes files into the local repo checkout. Making the
   written config *live* is a separate, explicit step run on each host: `hemma apply` (§6.3),
-  which restarts Pi-hole / validates + reloads Caddy. (This is a change from the original
+  which restarts Pi-hole / validates + reloads Caddy / validates + restarts the auth
+  provider. (This is a change from the original
   design, which left reload to an external deploy wrapper; `apply` folds that in as a command
   but still runs per-host and never SSHes.)
 - A service's artifacts fan out across **two machine directories**: its DNS record lives on
@@ -327,8 +328,10 @@ there is no gate for them to apply to.
 **Half-configured warnings** (`authConfigWarnings`, non-fatal, printed after a reconcile):
 `auth_snippet` set but no `auth_service` (redirect-loop risk); `auth_service` set but no
 `auth_snippet` (the `(auth)` block is a no-op stub); `auth_service` names a non-existent service;
-fully configured but no service opted in; plus the OIDC advisories above. These are advisories —
-auth still functions around them — so they warn, they don't block.
+fully configured but no service opted in; plus the OIDC advisories above. Auth still functions
+around them, so they warn rather than block a reconcile — with one exception: `doctor` treats
+snippet-set-but-no-`auth_service` as a **problem** (exit 1, §6.4), because it reproduces the
+redirect-loop hazard the `auth_service` pairing exists to prevent.
 
 ### 4.6 Generated access control (auth-provider artifact)
 
@@ -387,7 +390,9 @@ the OIDC validation (§4.5) warns about read-only. The provider config itself is
 content, ok)`, paths relative to the auth host's directory), the read-only
 validation of its own config (`ValidateConfig`) and users database
 (`ValidateUsers`, §6.4; `UserGroups` feeds `list`'s Groups section, §6.6),
-and credential minting + paste-in snippets
+the commands `apply` runs on the auth host (`ApplyCommands(container) →
+(validate, reload)`, §6.3 — Authelia: config validate, then container
+restart), and credential minting + paste-in snippets
 (`GenerateOIDCClient`/`OIDCClientSnippet`/`HashUserPassword`/`UserSnippet`,
 §6.5 — digest algorithms, parameters, and crypt encodings are implementation
 details of the provider type; the cli never sees them). `plan` and `cli` are
@@ -449,8 +454,10 @@ compiled from the same strings so it can't drift.
 ### 6.1 Service commands
 
 ```
-hemma add     service <name> --fqdn <f> --host <h> --backend <b> [--auth]   (-f/-H/-b)
-hemma update  service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth[=false]]
+hemma add     service <name> --fqdn <f> --host <h> --backend <b>            (-f/-H/-b)
+                             [--auth-mode forward|oidc|none] [--auth-groups g1,g2] [--auth]
+hemma update  service <name> [--fqdn ...] [--host ...] [--backend ...]
+                             [--auth-mode forward|oidc|none] [--auth-groups g1,g2] [--auth[=false]]
 hemma remove  service <name>
 hemma enable  service <name>
 hemma disable service <name>
@@ -458,11 +465,15 @@ hemma disable service <name>
 
 - **`add`**: validates required flags, that the fqdn matches a defined domain, and that the host
   exists — all **before** persisting, so a mistyped command never writes a half-formed entry.
-  Fails loud if the name or fqdn already exists. `--auth` opts the service into the `(auth)`
-  snippet (§4.5). Then persists and reconciles (Incremental).
+  Fails loud if the name or fqdn already exists. `--auth-mode forward|oidc|none` sets the auth
+  mode (§4.5); `--auth` is the back-compat shorthand for `--auth-mode forward` — passing both is
+  allowed only if they agree, otherwise the conflict is refused (exit 2). `--auth-groups g1,g2`
+  sets the auth-provider groups (requires a non-none mode). Then persists and reconciles
+  (Incremental).
 - **`update`**: fails if the service does not exist, or if no field flags were given (no-op is
-  reported, not silently "succeeded"). Only explicitly-set fields are changed; `--auth[=false]`
-  toggles forward-auth. Reconciles (Incremental).
+  reported, not silently "succeeded"). Only explicitly-set fields are changed; `--auth-mode` /
+  `--auth[=false]` set or clear the auth mode (same conflict refusal as `add`), and
+  `--auth-groups` sets the groups (`''` clears). Reconciles (Incremental).
 - **`remove`**: deletes the entry from YAML, deletes that service's manifest-tracked files, and
   drops it from the manifest. A removal still needs a subsequent `apply` on the affected hosts to
   drop the vhost/record from the running daemons.
@@ -502,7 +513,9 @@ hemma set    auth-service <name>          ('-' clears)
 - **`set dns-host <name>`**: sets `defaults.dns_host`. The named host must already exist. Without
   it, a CLI-only bootstrap leaves `dns_host` unset and reconcile refuses to route records.
 - **`set auth-snippet <path>`**: sets `defaults.auth_snippet` (the forward-auth block source,
-  §4.5). `-` clears it (reverting `(auth)` to the empty stub).
+  §4.5). Validates the source file exists **before** persisting, so a typo is caught here rather
+  than as a keep-last-good warning at every future reconcile. `-` clears it (reverting `(auth)`
+  to the empty stub).
 - **`set auth-service <name>`**: sets `defaults.auth_service` (the portal service, §4.5). The
   named service must exist. `-` clears it (the auth backend's block stops preserving
   `X-Forwarded-Host`).
@@ -534,6 +547,11 @@ it identifies which managed host it is by matching a local interface IP against 
 - **Caddy half** (if this host runs any non-disabled service): `caddy validate` **then**
   `caddy reload`. Validate runs first because it provisions the TLS app (loading cert files from
   disk), so a missing/wrong cert aborts here with a clear error instead of failing mid-reload.
+- **Auth half** (if this host runs the non-disabled `auth_service`): the provider's
+  `ApplyCommands()` — for Authelia, validate (`docker exec <container> authelia config
+  validate`) **then** restart (`docker restart <container>`; Authelia has no hot reload).
+  Same validate-before-reload discipline as Caddy: a bad provider config aborts before the
+  restart instead of taking the portal down.
 
 `apply` **hard-refuses if the repo has drift** (the one command that does — everything else
 reports-but-proceeds). The fix path is `doctor --fix` then `apply` again. Command output is
@@ -547,7 +565,7 @@ SSH.
 hemma doctor [--fix]     (-f)
 ```
 
-`doctor` audits the repo (no docker needed) and, with `--fix`, repairs it. Three checks:
+`doctor` audits the repo (no docker needed) and, with `--fix`, repairs it. Four checks:
 
 1. **Gitignore**: are any generated output paths swallowed by a `.gitignore` rule (e.g. a broad
    `**/data/**`)? Such files generate fine but never commit/deploy. `--fix` writes a managed
@@ -558,6 +576,9 @@ hemma doctor [--fix]     (-f)
 3. **Generated-file drift** (§9): missing / modified / orphaned generated files vs. what the
    plan says should exist. `--fix` runs a full **Complete** reconcile — rewriting missing/modified
    files and GC'ing orphaned tracked files (this is what the retired `sync --complete` did).
+4. **Auth config consistency** (§4.5): the half-configured-auth warnings are printed; most are
+   advisory, but snippet-set-but-no-`auth_service` counts as a problem (redirect-loop hazard).
+   An unreadable `auth_snippet` source also counts as a problem (keep-last-good still applies).
 
 Exits non-zero if any problem remains.
 
@@ -572,14 +593,14 @@ hashes or email addresses. All of this lives behind `auth.Provider.ValidateUsers
 ### 6.5 Credential generation: `create`
 
 ```
-splitdns create app oidc <app_name> [callback_path]
-splitdns create user <username>
+hemma create app oidc <app_name> [callback_path]
+hemma create user <username>
 ```
 
 Absorbs the standalone `authcli` tool, with native Go crypto instead of `docker run authelia`
 shell-outs. Both commands are **print-only**: they mint credentials and print paste-in snippets;
 the provider's `configuration.yml` and `users_database.yml` are hand-owned, secret-bearing files
-splitdns never writes. Everything provider-specific — digest algorithms/parameters and snippet
+hemma never writes. Everything provider-specific — digest algorithms/parameters and snippet
 YAML — lives behind `auth.Provider` (`GenerateOIDCClient`, `OIDCClientSnippet`,
 `HashUserPassword`, `UserSnippet`); the Authelia implementation uses github.com/go-crypt/crypt
 (the library Authelia itself uses), so digests are byte-compatible with
@@ -590,7 +611,11 @@ secrets, argon2id for user passwords, Authelia's default parameters).
   crypto/rand) and the secret's digest. If `<app_name>` matches a configured service, the
   redirect URI uses its real fqdn, and — when the service has auth groups — the snippet
   references the generated named `authorization_policy` (§4.6) instead of `one_factor`.
-  `[callback_path]` defaults to `/CHANGEME` (callback paths are app-defined).
+  When `<app_name>` matches no configured service, the redirect host is derived from the
+  repo's configured domains — `<app_name>.<first domain alphabetically>`; with no domains
+  configured there is nothing to derive a host from, so the command refuses with a hint to
+  add the service or a domain first. `[callback_path]` defaults to `/CHANGEME` (callback
+  paths are app-defined).
 - **`create user`** prompts for an email (plain) and a password (hidden, twice, via
   golang.org/x/term; requires a TTY), and prints a users-database entry with the argon2id digest.
   Groups are assigned by editing the pasted entry; `doctor` cross-checks them (§6.4).
@@ -608,6 +633,9 @@ hemma measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>   (-c/--a
   It warns first if `dns_host` is unset, marks disabled services `[disabled]`, and reports repo
   drift at the end. **Services default to the current host** (matched by local IP); `--all` shows
   every host. If the local IP matches no host, it falls back to showing everything.
+  When `auth_snippet` or `auth_service` is configured, an `== Auth ==` section (showing both,
+  with a set-command hint for a missing one) precedes the services table, and the §4.5
+  half-configured-auth warnings are printed at the end.
   When any auth group exists, a **Groups section** follows the services table: the union of the
   provider's users database (user → groups, via `auth.Provider.UserGroups`, read-only) and
   `services.yaml` auth groups, one block per group with its users and the services restricted to
@@ -629,6 +657,7 @@ hemma measure [--compare] [-n <runs>] [-w <warmup>] <service|fqdn|url>   (-c/--a
 ```
 hemma version | --version | -v
 hemma help [<command>]
+hemma completion <bash|zsh>    (prints a static shell completion script to stdout)
 hemma -C, --chdir <dir> ...
 ```
 
@@ -716,6 +745,9 @@ directory name itself can be overridden via `hosts[].dir`):
 - TLS snippets: `<host-dir>/caddy/data/tls/tls_<domain>.caddy`
 - Caddy import: `<host-dir>/caddy/data/hemma.generated.caddy`
 - Auth snippet: `<host-dir>/caddy/data/hemma.auth.generated.caddy`
+- Auth access control: `<auth-host-dir>/authelia/data/config/hemma.access_control.generated.yml`
+  (on the `auth_service`'s host only, §4.6; the `authelia/...` segment is the provider's
+  convention path)
 
 where `<host-dir>` is the host's `ResolvedDir` (its `dir:` or, by convention, its name).
 
@@ -736,6 +768,8 @@ where `<host-dir>` is the host's `ResolvedDir` (its `dir:` or, by convention, it
 - `cli`      — command parsing (stdlib `flag`), wiring, all user-facing output; help text
   (`UsageText` + `HelpTopics`, single-sourced with the man page); thin `main.go` calls `cli.Run`.
 - `tools/genman` — compiles the CLI help strings into `man/hemma.1.gz` at release time.
+- `tools/gencompletions` — writes the bash/zsh completion scripts (`completions/`) at release
+  time; the same generator backs `hemma completion <bash|zsh>` (§6.7).
 
 ## 12. Explicit non-goals
 
