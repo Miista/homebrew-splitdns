@@ -33,7 +33,7 @@ nfpms:
     ids: [hemma]
     package_name: hemma
     vendor: Miista
-    homepage: https://github.com/Miista/homebrew-splitdns
+    homepage: https://github.com/Miista/homebrew-hemma
     maintainer: Miista <noreply@users.noreply.github.com>
     description: Generate split-horizon DNS (Pi-hole/dnsmasq), Caddy site blocks, and auth-provider config from a declarative services.yaml
     license: MIT
@@ -103,13 +103,13 @@ brews:
   - name: hemma
     repository:
       owner: Miista
-      name: homebrew-splitdns
+      name: homebrew-hemma
       token: "{{ .Env.GITHUB_TOKEN }}"
     directory: Formula
     commit_author:
       name: goreleaser-bot
       email: bot@goreleaser.com
-    homepage: https://github.com/Miista/homebrew-splitdns
+    homepage: https://github.com/Miista/homebrew-hemma
     description: Generate split-horizon DNS (Pi-hole/dnsmasq), Caddy site blocks, and auth-provider config from a declarative services.yaml
     license: MIT
     install: |
