@@ -97,24 +97,28 @@ func cmdUpdateInteractive(repoRoot, cfgPath, name string) int {
 		}
 	}
 
-	groups := []*huh.Group{huh.NewGroup(
+	// One group = one page: huh paginates per group, so splitting fields
+	// across groups strands each on a mostly-empty screen. All fields render
+	// as a single column; only the rare "new group" input is a follow-up page.
+	fields := []huh.Field{
 		huh.NewInput().Title("fqdn").Value(&fqdn).Validate(nonEmpty("the fqdn")),
 		huh.NewSelect[string]().Title("host").Options(huh.NewOptions(hosts...)...).Value(&host),
 		huh.NewInput().Title("backend").Value(&backend),
-	)}
+	}
+	if !isAuthService {
+		fields = append(fields,
+			huh.NewSelect[string]().Title("auth mode").
+				Options(huh.NewOptions("none", "forward", "oidc")...).
+				Value(&mode),
+			huh.NewMultiSelect[string]().Title("auth groups").
+				Description(groupsDesc+" Ignored when auth mode is none.").
+				Options(groupOpts...).
+				Value(&selGroups),
+		)
+	}
+	groups := []*huh.Group{huh.NewGroup(fields...)}
 	if !isAuthService {
 		groups = append(groups,
-			huh.NewGroup(
-				huh.NewSelect[string]().Title("auth mode").
-					Options(huh.NewOptions("none", "forward", "oidc")...).
-					Value(&mode),
-			),
-			huh.NewGroup(
-				huh.NewMultiSelect[string]().Title("auth groups").
-					Description(groupsDesc).
-					Options(groupOpts...).
-					Value(&selGroups),
-			).WithHideFunc(func() bool { return mode == "none" }),
 			huh.NewGroup(
 				huh.NewInput().Title("new group name").
 					Description("It has no members yet — 'hemma doctor' will flag it until a user carries it.").
