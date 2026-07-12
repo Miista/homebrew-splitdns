@@ -168,7 +168,7 @@ type autheliaConfigDoc struct {
 // hemma validates OIDC but does not own it. The match is fqdn-only:
 // callback paths are app-defined (/login, /oidc/callback/,
 // /accounts/oidc/<provider>/...) and unknown to hemma.
-func (authelia) ValidateConfig(cfgPath string, services []Service) []string {
+func (authelia) ValidateConfig(cfgPath string, services []Service) []Advisory {
 	var oidcSvcs []Service
 	for _, s := range services {
 		if s.Mode == ModeOIDC {
@@ -180,11 +180,11 @@ func (authelia) ValidateConfig(cfgPath string, services []Service) []string {
 	}
 	sort.Slice(oidcSvcs, func(i, j int) bool { return oidcSvcs[i].Name < oidcSvcs[j].Name })
 
-	var w []string
+	var w []Advisory
 	doc, err := readAutheliaConfig(cfgPath)
 	if err != nil {
 		for _, s := range oidcSvcs {
-			w = append(w, fmt.Sprintf("could not verify OIDC client for %s: %v", s.Name, err))
+			w = append(w, Advisory{Headline: fmt.Sprintf("could not verify OIDC client for %s: %v", s.Name, err)})
 		}
 		return w
 	}
@@ -205,13 +205,27 @@ func (authelia) ValidateConfig(cfgPath string, services []Service) []string {
 			}
 		}
 		if !matched {
-			w = append(w, fmt.Sprintf("service %s is auth: oidc but no Authelia OIDC client registers a redirect_uri for %s — register the client in %s ('hemma create app oidc %s' prints a paste-in snippet).", s.Name, want, cfgPath, s.Name))
+			w = append(w, Advisory{
+				Headline: fmt.Sprintf("OIDC logins to %s will fail — no client is registered for it", s.Name),
+				Body: []string{fmt.Sprintf("service %s is auth: oidc but no Authelia OIDC client registers a redirect_uri for %s.",
+					s.Name, want)},
+				Fix: []string{fmt.Sprintf("register the client in %s", cfgPath),
+					fmt.Sprintf("('hemma create app oidc %s' prints a paste-in snippet)", s.Name)},
+				Then: "hemma apply",
+			})
 			continue
 		}
 		// Groups generate a named authorization_policy (see AccessControl);
 		// it only takes effect if the client opts into it by name.
 		if len(s.Groups) > 0 && matchedPolicy != s.Name {
-			w = append(w, fmt.Sprintf("service %s has auth groups but its Authelia OIDC client does not set authorization_policy: '%s' — set it in %s or the generated group policy never applies.", s.Name, s.Name, cfgPath))
+			w = append(w, Advisory{
+				Headline: fmt.Sprintf("group restrictions on %s are not enforced", s.Name),
+				Body: []string{fmt.Sprintf("%s has auth groups, but its Authelia OIDC client does not reference the generated", s.Name),
+					"named authorization_policy, so the group policy never applies."},
+				Fix: []string{fmt.Sprintf("set on the client in %s:", cfgPath),
+					fmt.Sprintf("  authorization_policy: '%s'", s.Name)},
+				Then: "hemma apply",
+			})
 		}
 	}
 	return w

@@ -49,20 +49,20 @@ func TestValidateUsers_GroupTypoAndUnreachableService(t *testing.T) {
 		{Name: "paperless", FQDN: "pl.example.com", Mode: ModeForward, Groups: []string{"admins", "editors"}}, // editors unknown, admins populated
 	}
 	w := (authelia{}).ValidateUsers(cfgPath, svcs)
-	joined := strings.Join(w, "\n")
+	joined := joinAdvisories(w)
 	// grafana: adminz typo + nobody-can-access; paperless: editors typo only
 	// (admins is populated); jellyfin: clean.
 	if len(w) != 3 {
-		t.Fatalf("want 3 warnings, got %d:\n%s", len(w), joined)
+		t.Fatalf("want 3 advisories, got %d:\n%s", len(w), joined)
 	}
 	if !strings.Contains(joined, `"adminz" (service grafana)`) {
-		t.Errorf("missing typo warning for grafana/adminz:\n%s", joined)
+		t.Errorf("missing typo advisory for grafana/adminz:\n%s", joined)
 	}
-	if !strings.Contains(joined, "nobody can access") || !strings.Contains(joined, "grafana's allowed groups") {
-		t.Errorf("missing nobody-can-access warning for grafana:\n%s", joined)
+	if !strings.Contains(joined, "nobody can access grafana") || !strings.Contains(joined, "grafana's allowed groups") {
+		t.Errorf("missing nobody-can-access advisory for grafana:\n%s", joined)
 	}
 	if !strings.Contains(joined, `"editors" (service paperless)`) {
-		t.Errorf("missing typo warning for paperless/editors:\n%s", joined)
+		t.Errorf("missing typo advisory for paperless/editors:\n%s", joined)
 	}
 	// No hashes or emails may leak into warnings.
 	if strings.Contains(joined, "argon2") || strings.Contains(joined, "@") {
@@ -85,12 +85,13 @@ func TestValidateUsers_NobodyCanAccess(t *testing.T) {
 		{Name: "pager", FQDN: "p.example.com", Mode: ModeOIDC, Groups: []string{"ops", "oncall"}},
 	}
 	w := (authelia{}).ValidateUsers(cfgPath, svcs)
-	joined := strings.Join(w, "\n")
+	joined := joinAdvisories(w)
 	if len(w) != 3 {
-		t.Fatalf("want 3 warnings (2 typo + 1 unreachable), got %d:\n%s", len(w), joined)
+		t.Fatalf("want 3 advisories (2 typo + 1 unreachable), got %d:\n%s", len(w), joined)
 	}
-	if !strings.Contains(joined, "no user is in any of service pager's allowed groups (ops, oncall) — nobody can access it.") {
-		t.Errorf("missing nobody-can-access warning:\n%s", joined)
+	if !strings.Contains(joined, "nobody can access pager") ||
+		!strings.Contains(joined, "no user is in any of service pager's allowed groups (ops, oncall)") {
+		t.Errorf("missing nobody-can-access advisory:\n%s", joined)
 	}
 	if strings.Contains(joined, "wiki") {
 		t.Errorf("reachable service must not be warned about:\n%s", joined)
@@ -119,8 +120,8 @@ func TestValidateUsers_CustomDBNameFromConfig(t *testing.T) {
 	cfgPath := writeUsersFixture(t, "authentication_backend:\n  file:\n    path: /config/users.custom.yml\n", "users.custom.yml", usersDB)
 	svcs := []Service{{Name: "g", FQDN: "g.example.com", Mode: ModeOIDC, Groups: []string{"nosuch"}}}
 	w := (authelia{}).ValidateUsers(cfgPath, svcs)
-	if len(w) != 2 || !strings.Contains(w[0], "users.custom.yml") {
-		t.Errorf("want typo warning naming users.custom.yml (+ unreachable warning), got %v", w)
+	if len(w) != 2 || !strings.Contains(w[0].String(), "users.custom.yml") {
+		t.Errorf("want typo advisory naming users.custom.yml (+ unreachable advisory), got %v", w)
 	}
 }
 
@@ -128,7 +129,7 @@ func TestValidateUsers_UnparseableDBSoftAdvisory(t *testing.T) {
 	cfgPath := writeUsersFixture(t, "", "users_database.yml", "users: [not a map\n")
 	svcs := []Service{{Name: "x", FQDN: "x.example.com", Mode: ModeForward, Groups: []string{"g"}}}
 	w := (authelia{}).ValidateUsers(cfgPath, svcs)
-	if len(w) != 1 || !strings.Contains(w[0], "could not cross-check") {
+	if len(w) != 1 || !strings.Contains(w[0].Headline, "could not cross-check") {
 		t.Errorf("want one soft advisory, got %v", w)
 	}
 }

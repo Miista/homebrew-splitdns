@@ -145,8 +145,8 @@ func TestAuthelia_ValidateConfig_AuthorizationPolicy(t *testing.T) {
 	// Client exists but no authorization_policy → warn.
 	write("")
 	w := p.ValidateConfig(cfgPath, svcs)
-	if len(w) != 1 || !strings.Contains(w[0], "authorization_policy: 'app'") {
-		t.Errorf("expected authorization_policy warning, got %v", w)
+	if len(w) != 1 || !strings.Contains(w[0].String(), "authorization_policy: 'app'") {
+		t.Errorf("expected authorization_policy advisory carrying the paste-in line, got %v", w)
 	}
 
 	// Wrong policy name → still warns.
@@ -172,8 +172,8 @@ func TestAuthelia_ValidateConfig_AuthorizationPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = p.ValidateConfig(cfgPath, svcs)
-	if len(w) != 1 || !strings.Contains(w[0], "no Authelia OIDC client registers a redirect_uri") {
-		t.Errorf("expected missing-client warning, got %v", w)
+	if len(w) != 1 || !strings.Contains(w[0].String(), "no Authelia OIDC client registers a redirect_uri") {
+		t.Errorf("expected missing-client advisory, got %v", w)
 	}
 }
 

@@ -2,11 +2,14 @@
 // is specific to one auth provider's config format (today: Authelia) lives
 // behind the Provider interface, so swapping providers (e.g. tinyauth) is a
 // new implementation plus a Register call — plan and cli stay
-// provider-agnostic and only consume (path, content) pairs and warning
-// strings.
+// provider-agnostic and only consume (path, content) pairs and structured
+// Advisory values.
 package auth
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // Mode strings as they appear in services.yaml (mirrors config.AuthMode; kept
 // as plain strings here so this package does not depend on config).
@@ -24,6 +27,48 @@ type Service struct {
 	Mode        string   // ModeForward or ModeOIDC
 	Groups      []string // provider group names allowed access; empty = any authenticated user
 	PublicPaths []string // paths exempt from auth (forward mode only)
+}
+
+// Advisory is one instructive advisory (design §6.4): a finding about a file
+// hemma deliberately never writes, carrying the complete manual fix. Providers
+// return the CONTENT (what is wrong, why, what to paste where); RENDERING —
+// the ⚠ glyph, indentation, dimming, and rewriting absolute repo paths to
+// repo-relative ones — is the cli layer's job, so every provider gets the
+// house style for free.
+//
+// Shape (the fix:/then: labels are a fixed mini-grammar the cli renders):
+//
+//	Headline — one short clause stating the CONSEQUENCE, not the mechanism.
+//	Body     — 0–2 lines of mechanism/why, pre-wrapped at ~90 columns.
+//	Fix      — the concrete action; line 0 follows the "fix:" label, later
+//	           lines are continuation/paste-in content (indent paste-in lines
+//	           with two leading spaces).
+//	Then     — optional follow-up command (e.g. "hemma apply").
+//
+// Headline-only advisories (soft could-not-verify notes) are fine.
+type Advisory struct {
+	Headline string
+	Body     []string
+	Fix      []string
+	Then     string
+}
+
+// String renders the advisory as plain undecorated text (one field per line,
+// fix:/then: labels included) — for tests and non-styled contexts; the cli
+// has its own styled renderer.
+func (a Advisory) String() string {
+	parts := []string{a.Headline}
+	parts = append(parts, a.Body...)
+	for i, f := range a.Fix {
+		if i == 0 {
+			f = "fix: " + f
+		}
+		parts = append(parts, f)
+	}
+	if a.Then != "" {
+		parts = append(parts, "then: "+a.Then)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // Provider is one auth provider (Authelia, tinyauth, ...). Implementations own
@@ -50,9 +95,9 @@ type Provider interface {
 	// previously generated, becomes an orphan and is GC'd).
 	AccessControl(services []Service) (path, content string, ok bool)
 	// ValidateConfig read-only checks the provider config at absolute path
-	// cfgPath against the auth-enabled services and returns human-readable
-	// warnings (report-but-proceed; never fatal).
-	ValidateConfig(cfgPath string, services []Service) []string
+	// cfgPath against the auth-enabled services and returns instructive
+	// advisories (report-but-proceed; never fatal).
+	ValidateConfig(cfgPath string, services []Service) []Advisory
 	// ValidateWiring read-only checks that the generated access-control
 	// artifact (AccessControl) is actually loaded by the provider's
 	// deployment, by parsing the auth host's docker-compose.yml from the repo
@@ -60,12 +105,12 @@ type Provider interface {
 	// auth_service host's repo directory (the same root ConfigPath and
 	// AccessControl paths are relative to; compose convention:
 	// <hostDir>/docker-compose.yml); container is the provider's container
-	// name (the auth_service name by convention). Returns advisory warnings
-	// (report-but-proceed; never fatal) and returns nil when AccessControl
-	// would emit nothing for these services — there is nothing to wire.
-	// Warnings must never quote compose content beyond the provider's own
-	// config-loading variable (compose files carry secrets).
-	ValidateWiring(hostDir, container string, services []Service) []string
+	// name (the auth_service name by convention). Returns instructive
+	// advisories (report-but-proceed; never fatal) and returns nil when
+	// AccessControl would emit nothing for these services — there is nothing
+	// to wire. Advisories must never quote compose content beyond the
+	// provider's own config-loading variable (compose files carry secrets).
+	ValidateWiring(hostDir, container string, services []Service) []Advisory
 	// ApplyCommands returns the commands (argv) `hemma apply` runs on the
 	// auth host to make a synced provider config live: validate runs first
 	// and must succeed before reload runs (the caddy validate-before-reload
@@ -93,10 +138,10 @@ type Provider interface {
 	UserSnippet(username, email, digest string) string
 	// ValidateUsers read-only cross-checks the provider's user database
 	// (located relative to the provider config at absolute path cfgPath)
-	// against the services' auth groups, returning advisory warnings. A
+	// against the services' auth groups, returning instructive advisories. A
 	// missing user database returns nil (the check is gated on it existing).
-	// Warnings never contain password hashes or email addresses.
-	ValidateUsers(cfgPath string, services []Service) []string
+	// Advisories never contain password hashes or email addresses.
+	ValidateUsers(cfgPath string, services []Service) []Advisory
 	// UserGroups reads the provider's user database (located relative to the
 	// provider config at absolute path cfgPath) and returns username ->
 	// groups, read-only. A missing database returns (nil, nil); passwords

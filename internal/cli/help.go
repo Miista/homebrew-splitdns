@@ -183,9 +183,11 @@ Flags:
   -f, --fix   Apply fixes: reconcile generated files and .gitignore entries.
 
 The auth checks are read-only advisories (hemma never writes the provider's
-config, users database, or compose file); each one prints the exact fix to
-paste in — e.g. the X_AUTHELIA_CONFIG value that wires the generated
-access-control file into the auth container.`},
+config, users database, or compose file); --fix cannot resolve them. Each
+advisory prints a headline (the consequence), the mechanism, and a fixed
+'fix:'/'then:' grammar — the exact edit to paste in (e.g. the
+X_AUTHELIA_CONFIG value that wires the generated access-control file into
+the auth container) and the follow-up command (usually 'hemma apply').`},
 
 	{"measure", `hemma measure — time the HTTPS request breakdown (dns/connect/tls/ttfb)
 

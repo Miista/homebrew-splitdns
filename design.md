@@ -611,6 +611,28 @@ always carry the complete, copy-pasteable fix — the exact env line to set (com
 current value when present), the exact `hemma create`/`hemma update` command, the exact section
 to remove — never just a diagnosis.
 
+**Advisory format.** Advisories are structured (`auth.Advisory`: headline / body / fix / then)
+and every producer renders through one cli-layer printer, so future providers get the house
+style for free. The shape is compiler-style:
+
+```
+⚠ <headline: one short clause stating the CONSEQUENCE, not the mechanism>
+    <1–2 body lines: the mechanism/why, wrapped at ~90 cols>
+    fix:  <the concrete action, paste-in content indented on its own line(s)>
+    then: <follow-up command if any, e.g. hemma apply>
+```
+
+The `fix:`/`then:` labels are a fixed mini-grammar (`then:` optional; soft could-not-verify
+advisories may be headline-only). A blank line separates consecutive advisories. Message
+CONTENT lives in the provider; RENDERING is the cli's: on a TTY (same NO_COLOR/TTY gate as the
+glyphs) the headline keeps the warn style and body/fix/then render dim; piped output stays
+plain. Absolute paths under the repo root are rewritten repo-relative (`pi/docker-compose.yml`);
+container paths (`/config/...`) are untouched. Whenever at least one advisory printed, the block
+ends with a single dim summary line — `These advisories require manual edits (see their fix:
+lines) — 'hemma doctor --fix' does not resolve them.` — in both plain and `--fix` mode (so
+surviving advisories don't read as `--fix` having failed), and doctor never recommends running
+`--fix` when the only findings are advisories.
+
 Additionally, doctor runs **advisory users-database cross-checks** (never affect the exit code),
 gated on the provider's users database existing next to its config (filename taken from
 `authentication_backend.file.path`'s basename when declared, else `users_database.yml`): every

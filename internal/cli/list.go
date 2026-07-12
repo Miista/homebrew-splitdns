@@ -98,9 +98,7 @@ func cmdList(cfgPath string, args []string) int {
 	// groups (hidden when no group exists on either side).
 	printGroupsSection(repoRoot, cfg)
 
-	for _, msg := range authConfigWarnings(repoRoot, cfg) {
-		fmt.Printf("%s %s\n", warn, msg)
-	}
+	printAdvisories(repoRoot, authConfigWarnings(repoRoot, cfg))
 
 	reportDrift(detectDrift(repoRoot, cfg, loadManifest(repoRoot, cfg)))
 	return 0

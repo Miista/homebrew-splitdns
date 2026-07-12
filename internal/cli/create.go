@@ -211,7 +211,7 @@ func promptPassword(fd int, prompt string) (string, error) {
 // (auth-group typos, services nobody can access) for `doctor`. Mirrors
 // oidcClientWarnings' config location logic; silent when the auth service or
 // its host isn't resolvable (those misconfigurations are flagged elsewhere).
-func usersDBWarnings(repoRoot string, cfg *config.Config) []string {
+func usersDBWarnings(repoRoot string, cfg *config.Config) []auth.Advisory {
 	if cfg.Defaults.AuthService == "" {
 		return nil
 	}

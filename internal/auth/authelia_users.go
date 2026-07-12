@@ -88,7 +88,7 @@ func (authelia) UserGroups(cfgPath string) (map[string][]string, error) {
 // Gated on the users database existing at the conventional path next to the
 // provider config — absent file returns nil (LDAP backends etc. have no file
 // to check). An unreadable/unparseable file yields a single soft advisory.
-func (a authelia) ValidateUsers(cfgPath string, services []Service) []string {
+func (a authelia) ValidateUsers(cfgPath string, services []Service) []Advisory {
 	var withGroups []Service
 	for _, s := range services {
 		if len(s.Groups) > 0 {
@@ -102,7 +102,7 @@ func (a authelia) ValidateUsers(cfgPath string, services []Service) []string {
 
 	users, err := a.UserGroups(cfgPath)
 	if err != nil {
-		return []string{fmt.Sprintf("could not cross-check auth groups: %v", err)}
+		return []Advisory{{Headline: fmt.Sprintf("could not cross-check auth groups: %v", err)}}
 	}
 	if users == nil {
 		return nil // gate: no file backend here, nothing to cross-check
@@ -117,7 +117,7 @@ func (a authelia) ValidateUsers(cfgPath string, services []Service) []string {
 		}
 	}
 
-	var w []string
+	var w []Advisory
 	for _, s := range withGroups {
 		anyMember := false
 		for _, g := range s.Groups {
@@ -125,10 +125,20 @@ func (a authelia) ValidateUsers(cfgPath string, services []Service) []string {
 				anyMember = true
 				continue
 			}
-			w = append(w, fmt.Sprintf("auth group %q (service %s) is not assigned to any user in %s — check for a typo: fix the list with 'hemma update service %s --auth-groups <groups>' or add the group to a user in that file.", g, s.Name, filepath.Base(usersPath), s.Name))
+			w = append(w, Advisory{
+				Headline: fmt.Sprintf("auth group %q (service %s) matches no user — likely a typo", g, s.Name),
+				Body:     []string{fmt.Sprintf("no user in %s is in group %q.", usersPath, g)},
+				Fix: []string{fmt.Sprintf("fix the list with 'hemma update service %s --auth-groups <groups>',", s.Name),
+					fmt.Sprintf("or add the group to a user in %s", usersPath)},
+			})
 		}
 		if !anyMember {
-			w = append(w, fmt.Sprintf("no user is in any of service %s's allowed groups (%s) — nobody can access it. Add a group to a user in %s or relax the service's --auth-groups.", s.Name, strings.Join(s.Groups, ", "), filepath.Base(usersPath)))
+			w = append(w, Advisory{
+				Headline: fmt.Sprintf("nobody can access %s", s.Name),
+				Body:     []string{fmt.Sprintf("no user is in any of service %s's allowed groups (%s).", s.Name, strings.Join(s.Groups, ", "))},
+				Fix: []string{fmt.Sprintf("add one of the groups to a user in %s,", usersPath),
+					fmt.Sprintf("or relax the list with 'hemma update service %s --auth-groups <groups>'", s.Name)},
+			})
 		}
 	}
 	return w

@@ -136,33 +136,32 @@ func cmdDoctor(cfgPath string, args []string) int {
 	// --- generated-file drift check (missing / modified / orphaned) ---
 	problems += checkDrift(repoRoot, cfg, fix)
 
-	// --- auth config advisories ---
+	// --- instructive advisories (auth config, users database, wiring) ---
 	// Report-but-proceed: these don't corrupt generated files, but the
 	// snippet-without-auth_service case reproduces the redirect-loop bug, so it
 	// counts as a doctor problem (non-zero exit). The rest are advisory.
-	if warns := authConfigWarnings(repoRoot, cfg); len(warns) > 0 {
-		for _, msg := range warns {
-			fmt.Printf("%s %s\n", warn, msg)
-		}
+	// The users-db cross-checks are gated inside the provider on the users
+	// database file existing; the wiring check on the access-control artifact
+	// being part of the plan. None of them is --fix-able (hemma never writes
+	// docker-compose.yml, configuration.yml, or the users database), so each
+	// advisory carries the full paste-in recipe, rendered by printAdvisories,
+	// and the block ends with one summary line saying --fix does not resolve
+	// them — printed in --fix mode too, so surviving advisories don't read as
+	// --fix having failed.
+	advs := authConfigWarnings(repoRoot, cfg)
+	if len(advs) > 0 {
 		if cfg.Defaults.AuthSnippet != "" && cfg.Defaults.AuthService == "" {
 			problems++
 		}
 	} else if cfg.Defaults.AuthSnippet != "" {
 		fmt.Println(tick + " Auth config is consistent.")
 	}
-
-	// --- users-database cross-checks (advisory only; never affect exit code) ---
-	// Gated inside the provider on the users database file existing.
-	for _, msg := range usersDBWarnings(repoRoot, cfg) {
-		fmt.Printf("%s %s\n", warn, msg)
-	}
-
-	// --- access-control wiring check (advisory only; never affects exit code) ---
-	// Gated on the access-control artifact being part of the plan; silent
-	// otherwise. Not --fix-able (hemma never writes docker-compose.yml or
-	// configuration.yml), so the warnings carry the full paste-in recipe.
-	for _, msg := range authWiringWarnings(repoRoot, cfg) {
-		fmt.Printf("%s %s\n", warn, msg)
+	advs = append(advs, usersDBWarnings(repoRoot, cfg)...)
+	advs = append(advs, authWiringWarnings(repoRoot, cfg)...)
+	if len(advs) > 0 {
+		fmt.Println()
+		printAdvisories(repoRoot, advs)
+		fmt.Printf("\n%sThese advisories require manual edits (see their fix: lines) — 'hemma doctor --fix' does not resolve them.%s\n", dimOn, dimOff)
 	}
 
 	if problems > 0 {
@@ -178,7 +177,7 @@ func cmdDoctor(cfgPath string, args []string) int {
 // host isn't resolvable (flagged elsewhere), when the auth service is
 // disabled (apply skips its auth half too), or when the artifact isn't part
 // of the plan (gated inside the provider).
-func authWiringWarnings(repoRoot string, cfg *config.Config) []string {
+func authWiringWarnings(repoRoot string, cfg *config.Config) []auth.Advisory {
 	if cfg.Defaults.AuthService == "" {
 		return nil
 	}

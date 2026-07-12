@@ -150,8 +150,8 @@ func TestAuthWiringWarnings_UnwiredWarns(t *testing.T) {
 	writeAuthComposeFixture(t, dir, "services:\n  authelia:\n    image: authelia/authelia\n")
 	cfg, _ := loadExisting(filepath.Join(dir, configName), "test")
 	w := authWiringWarnings(dir, cfg)
-	if len(w) != 1 || !strings.Contains(w[0], "X_AUTHELIA_CONFIG") {
-		t.Fatalf("want one unwired warning, got %v", w)
+	if len(w) != 1 || !strings.Contains(w[0].String(), "X_AUTHELIA_CONFIG") {
+		t.Fatalf("want one unwired advisory, got %v", w)
 	}
 }
 
@@ -208,8 +208,67 @@ func TestDoctor_ReportsWiringWarning(t *testing.T) {
 	if !strings.Contains(out, "X_AUTHELIA_CONFIG: '/config/configuration.yml,/config/hemma.access_control.generated.yml'") {
 		t.Errorf("doctor should surface the wiring recipe:\n%s", out)
 	}
+	// Rendering: repo paths are shown repo-relative, container paths as-is.
+	if !strings.Contains(out, "appbox/docker-compose.yml") || strings.Contains(out, dir+"/appbox/docker-compose.yml") {
+		t.Errorf("advisory paths should be repo-relative:\n%s", out)
+	}
+	// The compiler-style shape: fix:/then: mini-grammar under the headline.
+	if !strings.Contains(out, "    fix:  ") || !strings.Contains(out, "    then: hemma apply") {
+		t.Errorf("advisory should use the fix:/then: grammar:\n%s", out)
+	}
 	// Advisory only: the wiring warning alone must not flip the exit code.
 	if code := Run([]string{"-C", dir, "doctor"}); code != 0 {
 		t.Errorf("wiring advisory must not affect exit code, got %d", code)
+	}
+}
+
+// The advisory summary line: whenever instructive advisories print, doctor
+// must say — once, at the end of the block — that --fix does not resolve
+// them. In plain mode (so nobody reaches for --fix expecting it to) AND in
+// --fix mode (so surviving advisories don't read as --fix having failed).
+const advisorySummaryLine = "'hemma doctor --fix' does not resolve them"
+
+func TestDoctor_AdvisorySummaryLine_Plain(t *testing.T) {
+	dir := t.TempDir()
+	seedWithAuth(t, dir)
+	writeAuthComposeFixture(t, dir, "services:\n  authelia:\n    image: authelia/authelia\n")
+	captureStdout(t, func() { Run([]string{"-C", dir, "doctor", "--fix"}) }) // settle drift
+
+	out := captureStdout(t, func() { Run([]string{"-C", dir, "doctor"}) })
+	if n := strings.Count(out, advisorySummaryLine); n != 1 {
+		t.Errorf("plain doctor should print the advisory summary line exactly once, got %d:\n%s", n, out)
+	}
+}
+
+func TestDoctor_AdvisorySummaryLine_FixMode(t *testing.T) {
+	dir := t.TempDir()
+	seedWithAuth(t, dir)
+	writeAuthComposeFixture(t, dir, "services:\n  authelia:\n    image: authelia/authelia\n")
+
+	out := captureStdout(t, func() { Run([]string{"-C", dir, "doctor", "--fix"}) })
+	if n := strings.Count(out, advisorySummaryLine); n != 1 {
+		t.Errorf("doctor --fix should print the advisory summary line exactly once, got %d:\n%s", n, out)
+	}
+}
+
+// When the ONLY findings are instructive advisories, doctor must not
+// recommend running --fix — it can't touch them.
+func TestDoctor_AdvisoriesOnly_NoFixHint(t *testing.T) {
+	dir := t.TempDir()
+	seedWithAuth(t, dir)
+	writeAuthComposeFixture(t, dir, "services:\n  authelia:\n    image: authelia/authelia\n")
+	captureStdout(t, func() { Run([]string{"-C", dir, "doctor", "--fix"}) }) // settle drift
+
+	out := captureStdout(t, func() { Run([]string{"-C", dir, "doctor"}) })
+	if !strings.Contains(out, "X_AUTHELIA_CONFIG") {
+		t.Fatalf("fixture should produce a wiring advisory:\n%s", out)
+	}
+	if strings.Contains(out, "Run 'hemma doctor --fix'") {
+		t.Errorf("advisories-only output must not recommend --fix:\n%s", out)
+	}
+	// No summary-free advisories: absence of fixable problems still ends the
+	// advisory block with the summary line.
+	if !strings.Contains(out, advisorySummaryLine) {
+		t.Errorf("advisory block should end with the summary line:\n%s", out)
 	}
 }

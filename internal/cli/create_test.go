@@ -167,10 +167,14 @@ func TestUsersDBWarnings_WiredThroughRepoLayout(t *testing.T) {
 		t.Fatalf("load: %d", code)
 	}
 	w := usersDBWarnings(dir, cfg)
-	joined := strings.Join(w, "\n")
+	var parts []string
+	for _, a := range w {
+		parts = append(parts, a.String())
+	}
+	joined := strings.Join(parts, "\n")
 	// grafana's group "admins" is on no user: typo + nobody-can-access.
 	if len(w) != 2 || !strings.Contains(joined, `"admins" (service grafana)`) || !strings.Contains(joined, "nobody can access") {
-		t.Errorf("want admins typo + unreachable warnings, got %v", w)
+		t.Errorf("want admins typo + unreachable advisories, got %v", w)
 	}
 }
 

@@ -68,7 +68,7 @@ type autheliaTopLevelDoc struct {
 // Gated on the artifact actually being emitted for these services (nil
 // otherwise — nothing to wire). A missing/unparseable compose file, or no
 // matching service in it, degrades to a single soft could-not-verify advisory.
-func (a authelia) ValidateWiring(hostDir, container string, services []Service) []string {
+func (a authelia) ValidateWiring(hostDir, container string, services []Service) []Advisory {
 	relPath, content, ok := a.AccessControl(services)
 	if !ok {
 		return nil // artifact not part of the plan — nothing to wire.
@@ -78,10 +78,10 @@ func (a authelia) ValidateWiring(hostDir, container string, services []Service) 
 
 	envValue, envFound, err := composeEnvValue(composePath, container, autheliaConfigEnv)
 	if err != nil {
-		return []string{fmt.Sprintf("could not verify that Authelia loads the generated %s: %v", artifact, err)}
+		return []Advisory{{Headline: fmt.Sprintf("could not verify that Authelia loads the generated %s: %v", artifact, err)}}
 	}
 
-	var w []string
+	var w []Advisory
 	wired := false
 	if envFound {
 		for _, entry := range strings.Split(envValue, ",") {
@@ -98,13 +98,18 @@ func (a authelia) ValidateWiring(hostDir, container string, services []Service) 
 		if envFound {
 			want = envValue + "," + autheliaContainerConfigDir + "/" + artifact
 		}
-		detail := fmt.Sprintf("%s is not set on it", autheliaConfigEnv)
+		detail := fmt.Sprintf("%s is not set on the %s service.", autheliaConfigEnv, container)
 		if envFound {
-			detail = fmt.Sprintf("its %s=%q does not list the file", autheliaConfigEnv, envValue)
+			detail = fmt.Sprintf("its %s=%q does not list the file.", autheliaConfigEnv, envValue)
 		}
-		w = append(w, fmt.Sprintf(
-			"%s is generated but Authelia does not load it — %s. Set on the %s service in %s:\n    %s: '%s'\n  then restart Authelia (hemma apply).",
-			artifact, detail, container, composePath, autheliaConfigEnv, want))
+		w = append(w, Advisory{
+			Headline: "access control is declared but not enforced",
+			Body: []string{fmt.Sprintf("%s is generated, but Authelia is not configured to load it —", artifact),
+				detail},
+			Fix: []string{fmt.Sprintf("add to the %s service environment in %s:", container, composePath),
+				fmt.Sprintf("  %s: '%s'", autheliaConfigEnv, want)},
+			Then: "hemma apply",
+		})
 	}
 
 	// Duplicate access_control: only meaningful when the artifact itself
@@ -112,9 +117,14 @@ func (a authelia) ValidateWiring(hostDir, container string, services []Service) 
 	if strings.Contains(content, "\naccess_control:\n") {
 		cfgPath := filepath.Join(hostDir, autheliaConfigPath)
 		if hasTopLevelAccessControl(cfgPath) {
-			w = append(w, fmt.Sprintf(
-				"%s defines a top-level access_control section and the generated %s renders one too — Authelia does not merge access_control rule lists across config files, one silently wins. Once the generated file is wired in, remove the hand-written access_control section from %s and restart Authelia (hemma apply).",
-				cfgPath, artifact, filepath.Base(cfgPath)))
+			w = append(w, Advisory{
+				Headline: "access_control is defined twice — one silently wins",
+				Body: []string{fmt.Sprintf("both %s and the generated %s define a top-level", filepath.Base(cfgPath), artifact),
+					"access_control section, and Authelia does not merge rule lists across config files."},
+				Fix: []string{fmt.Sprintf("remove the access_control section from %s", cfgPath),
+					"(the generated file replaces it)"},
+				Then: "hemma apply",
+			})
 		}
 	}
 	return w

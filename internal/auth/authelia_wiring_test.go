@@ -39,10 +39,19 @@ func writeWiringFixture(t *testing.T, composeYAML, configYAML string) string {
 	return dir
 }
 
-func assertNoSecretLeak(t *testing.T, warnings []string) {
+// joinAdvisories flattens advisories to plain text for substring assertions.
+func joinAdvisories(advs []Advisory) string {
+	var parts []string
+	for _, a := range advs {
+		parts = append(parts, a.String())
+	}
+	return strings.Join(parts, "\n")
+}
+
+func assertNoSecretLeak(t *testing.T, advs []Advisory) {
 	t.Helper()
-	if strings.Contains(strings.Join(warnings, "\n"), composeSecret) {
-		t.Errorf("warnings must never quote compose content beyond X_AUTHELIA_CONFIG:\n%s", strings.Join(warnings, "\n"))
+	if strings.Contains(joinAdvisories(advs), composeSecret) {
+		t.Errorf("advisories must never quote compose content beyond X_AUTHELIA_CONFIG:\n%s", joinAdvisories(advs))
 	}
 }
 
@@ -59,13 +68,17 @@ func TestValidateWiring_EnvMapMissingEntry(t *testing.T) {
 	if len(w) != 1 {
 		t.Fatalf("want 1 warning, got %d: %v", len(w), w)
 	}
-	// The warning must diagnose (quoting the current value) AND carry the
-	// exact value to paste in, preserving the existing entries.
-	if !strings.Contains(w[0], `X_AUTHELIA_CONFIG="/config/configuration.yml"`) {
-		t.Errorf("warning should quote the current env value:\n%s", w[0])
+	// The advisory must diagnose (quoting the current value) AND carry the
+	// exact value to paste in, preserving the existing entries. Consequence in
+	// the headline; container paths stay container paths.
+	if !strings.Contains(w[0].Headline, "not enforced") {
+		t.Errorf("headline should state the consequence:\n%s", w[0])
 	}
-	if !strings.Contains(w[0], "X_AUTHELIA_CONFIG: '/config/configuration.yml,/config/hemma.access_control.generated.yml'") {
-		t.Errorf("warning should carry the exact env line to set:\n%s", w[0])
+	if !strings.Contains(w[0].String(), `X_AUTHELIA_CONFIG="/config/configuration.yml"`) {
+		t.Errorf("advisory should quote the current env value:\n%s", w[0])
+	}
+	if !strings.Contains(w[0].String(), "X_AUTHELIA_CONFIG: '/config/configuration.yml,/config/hemma.access_control.generated.yml'") {
+		t.Errorf("advisory should carry the exact env line to set:\n%s", w[0])
 	}
 	assertNoSecretLeak(t, w)
 }
@@ -93,15 +106,15 @@ func TestValidateWiring_EnvVarAbsent(t *testing.T) {
 `
 	dir := writeWiringFixture(t, compose, "")
 	w := (authelia{}).ValidateWiring(dir, "authelia", wiringSvcs)
-	if len(w) != 1 || !strings.Contains(w[0], "X_AUTHELIA_CONFIG is not set") {
-		t.Fatalf("want one not-set warning, got %v", w)
+	if len(w) != 1 || !strings.Contains(w[0].String(), "X_AUTHELIA_CONFIG is not set") {
+		t.Fatalf("want one not-set advisory, got %v", w)
 	}
 	// Absent var -> the conventional default value is suggested.
-	if !strings.Contains(w[0], "X_AUTHELIA_CONFIG: '/config/configuration.yml,/config/hemma.access_control.generated.yml'") {
-		t.Errorf("warning should carry the conventional env line:\n%s", w[0])
+	if !strings.Contains(w[0].String(), "X_AUTHELIA_CONFIG: '/config/configuration.yml,/config/hemma.access_control.generated.yml'") {
+		t.Errorf("advisory should carry the conventional env line:\n%s", w[0])
 	}
-	if !strings.Contains(w[0], "hemma apply") {
-		t.Errorf("warning should say how to make it live:\n%s", w[0])
+	if w[0].Then != "hemma apply" {
+		t.Errorf("advisory should say how to make it live (then: hemma apply):\n%s", w[0])
 	}
 }
 
@@ -122,12 +135,12 @@ func TestValidateWiring_HandWrittenAccessControlConflict(t *testing.T) {
 	if len(w) != 1 {
 		t.Fatalf("want 1 duplicate warning (wiring itself is correct), got %d: %v", len(w), w)
 	}
-	if !strings.Contains(w[0], "does not merge access_control") || !strings.Contains(w[0], "remove the hand-written access_control section") {
-		t.Errorf("want duplicate-section warning with the concrete fix:\n%s", w[0])
+	if !strings.Contains(w[0].String(), "does not merge rule lists") || !strings.Contains(w[0].String(), "remove the access_control section from") {
+		t.Errorf("want duplicate-section advisory with the concrete fix:\n%s", w[0])
 	}
 	// The hand-written rules themselves must not be quoted.
-	if strings.Contains(w[0], "old.example.com") {
-		t.Errorf("warning must not quote configuration.yml content:\n%s", w[0])
+	if strings.Contains(w[0].String(), "old.example.com") {
+		t.Errorf("advisory must not quote configuration.yml content:\n%s", w[0])
 	}
 }
 
@@ -150,15 +163,19 @@ func TestValidateWiring_NoConflictWhenArtifactHasNoAccessControl(t *testing.T) {
 func TestValidateWiring_MissingComposeSoftAdvisory(t *testing.T) {
 	dir := writeWiringFixture(t, "", "")
 	w := (authelia{}).ValidateWiring(dir, "authelia", wiringSvcs)
-	if len(w) != 1 || !strings.Contains(w[0], "could not verify") {
+	if len(w) != 1 || !strings.Contains(w[0].Headline, "could not verify") {
 		t.Fatalf("want one could-not-verify advisory, got %v", w)
+	}
+	// Soft advisories are headline-only: no fix to give.
+	if len(w[0].Fix) != 0 {
+		t.Errorf("could-not-verify advisory should carry no fix, got %v", w[0].Fix)
 	}
 }
 
 func TestValidateWiring_UnparseableComposeSoftAdvisory(t *testing.T) {
 	dir := writeWiringFixture(t, "services: [not a map\n", "")
 	w := (authelia{}).ValidateWiring(dir, "authelia", wiringSvcs)
-	if len(w) != 1 || !strings.Contains(w[0], "could not verify") {
+	if len(w) != 1 || !strings.Contains(w[0].Headline, "could not verify") {
 		t.Fatalf("want one could-not-verify advisory, got %v", w)
 	}
 }
@@ -166,7 +183,7 @@ func TestValidateWiring_UnparseableComposeSoftAdvisory(t *testing.T) {
 func TestValidateWiring_ServiceNotInComposeSoftAdvisory(t *testing.T) {
 	dir := writeWiringFixture(t, "services:\n  caddy:\n    image: caddy\n", "")
 	w := (authelia{}).ValidateWiring(dir, "authelia", wiringSvcs)
-	if len(w) != 1 || !strings.Contains(w[0], "could not verify") || !strings.Contains(w[0], `no service "authelia"`) {
+	if len(w) != 1 || !strings.Contains(w[0].Headline, "could not verify") || !strings.Contains(w[0].Headline, `no service "authelia"`) {
 		t.Fatalf("want one could-not-verify advisory naming the missing service, got %v", w)
 	}
 }

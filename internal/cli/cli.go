@@ -39,6 +39,8 @@ var (
 	warn    = "⚠"
 	boldOn  = ""
 	boldOff = ""
+	dimOn   = ""
+	dimOff  = ""
 )
 
 func init() {
@@ -50,6 +52,8 @@ func init() {
 	warn = "\033[33m⚠\033[0m"
 	boldOn = "\033[1m"
 	boldOff = "\033[0m"
+	dimOn = "\033[2m"
+	dimOff = "\033[0m"
 }
 
 // colorEnabled reports whether ANSI color should be used: stdout is a terminal
@@ -353,8 +357,8 @@ func syncBlockedReason(cfg *config.Config) string {
 //     OIDC — client registration and app env are out of scope.
 //
 // repoRoot is needed to locate the Authelia config for the OIDC checks.
-func authConfigWarnings(repoRoot string, cfg *config.Config) []string {
-	var w []string
+func authConfigWarnings(repoRoot string, cfg *config.Config) []auth.Advisory {
+	var w []auth.Advisory
 	snippet := cfg.Defaults.AuthSnippet != ""
 	service := cfg.Defaults.AuthService != ""
 
@@ -370,18 +374,34 @@ func authConfigWarnings(repoRoot string, cfg *config.Config) []string {
 	}
 
 	if snippet && !service {
-		w = append(w, "auth_snippet is set but auth_service is not — post-login redirects will loop back to the auth portal. Name the auth backend with: hemma set auth-service <name>")
+		w = append(w, auth.Advisory{
+			Headline: "post-login redirects will loop back to the auth portal",
+			Body: []string{"auth_snippet is set but auth_service is not, so the auth backend's site block",
+				"does not preserve X-Forwarded-Host."},
+			Fix: []string{"hemma set auth-service <name>"},
+		})
 	}
 	if service && !snippet {
-		w = append(w, "auth_service is set but auth_snippet is not — the (auth) snippet is an empty no-op, so auth does nothing. Set it with: hemma set auth-snippet <path>")
+		w = append(w, auth.Advisory{
+			Headline: "auth is configured but does nothing — the (auth) snippet is an empty no-op",
+			Body:     []string{"auth_service is set but auth_snippet is not."},
+			Fix:      []string{"hemma set auth-snippet <path>"},
+		})
 	}
 	if service {
 		if _, ok := cfg.Services[cfg.Defaults.AuthService]; !ok {
-			w = append(w, fmt.Sprintf("auth_service %q is not a defined service.", cfg.Defaults.AuthService))
+			w = append(w, auth.Advisory{
+				Headline: fmt.Sprintf("auth_service %q is not a defined service", cfg.Defaults.AuthService),
+				Fix:      []string{"hemma set auth-service <name>  (or add the service first)"},
+			})
 		}
 	}
 	if snippet && service && !anyForward {
-		w = append(w, "the auth snippet is configured but no service uses forward auth — opt one in with: hemma update service <name> --auth-mode forward")
+		w = append(w, auth.Advisory{
+			Headline: "auth is fully configured but nothing is protected yet",
+			Body:     []string{"no service uses forward auth."},
+			Fix:      []string{"hemma update service <name> --auth-mode forward"},
+		})
 	}
 
 	// OIDC client-existence checks (read-only; never writes the Authelia config).
@@ -391,15 +411,51 @@ func authConfigWarnings(repoRoot string, cfg *config.Config) []string {
 	return w
 }
 
+// printAdvisories renders instructive advisories (design §6.4) in the house
+// compiler style: a warn-glyph headline stating the consequence, then dim
+// indented body lines (the mechanism) and the fixed fix:/then: mini-grammar.
+// A blank line separates consecutive advisories. Message CONTENT comes from
+// the producer (usually the auth provider); this renderer owns the styling
+// and rewrites absolute paths under repoRoot to repo-relative ones (container
+// paths like /config/... are untouched). Dimming follows the same TTY /
+// NO_COLOR gate as the glyphs; piped output stays plain.
+func printAdvisories(repoRoot string, advs []auth.Advisory) {
+	rel := func(s string) string {
+		return strings.ReplaceAll(s, repoRoot+string(filepath.Separator), "")
+	}
+	for i, a := range advs {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("%s %s\n", warn, rel(a.Headline))
+		for _, b := range a.Body {
+			fmt.Printf("    %s%s%s\n", dimOn, rel(b), dimOff)
+		}
+		for j, f := range a.Fix {
+			if j == 0 {
+				fmt.Printf("    %sfix:  %s%s\n", dimOn, rel(f), dimOff)
+			} else {
+				fmt.Printf("          %s%s%s\n", dimOn, rel(f), dimOff)
+			}
+		}
+		if a.Then != "" {
+			fmt.Printf("    %sthen: %s%s\n", dimOn, a.Then, dimOff)
+		}
+	}
+}
+
 // oidcClientWarnings delegates the read-only OIDC checks to the auth
 // provider: client existence per auth: oidc service, and — for services with
 // auth groups — that the client references the generated authorization_policy.
 // The cli only locates the provider's config file
 // (<repoRoot>/<auth_service host dir>/<provider config path>); everything
 // Authelia-specific lives behind the auth.Provider interface.
-func oidcClientWarnings(repoRoot string, cfg *config.Config) []string {
+func oidcClientWarnings(repoRoot string, cfg *config.Config) []auth.Advisory {
 	if cfg.Defaults.AuthService == "" {
-		return []string{"OIDC clients can't be verified (auth_service not set) — set the Authelia service with: hemma set auth-service <name>"}
+		return []auth.Advisory{{
+			Headline: "OIDC clients can't be verified — auth_service is not set",
+			Fix:      []string{"hemma set auth-service <name>"},
+		}}
 	}
 	authSvc, ok := cfg.Services[cfg.Defaults.AuthService]
 	if !ok {
@@ -712,9 +768,7 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 	if len(cfg.Domains) == 0 {
 		fmt.Println("Note: no domains defined — run 'hemma add domain <name>' (a service's fqdn must match a domain).")
 	}
-	for _, msg := range authConfigWarnings(repoRoot, cfg) {
-		fmt.Printf("%s %s\n", warn, msg)
-	}
+	printAdvisories(repoRoot, authConfigWarnings(repoRoot, cfg))
 
 	{
 		// List only services whose files actually changed this run. A no-op
