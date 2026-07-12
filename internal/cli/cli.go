@@ -674,7 +674,9 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 	// Read the auth snippet source (if configured). On failure, keep the
 	// last-good generated snippet: refuse to regenerate the auth file rather than
 	// silently reset it to the empty stub, which would drop auth on every
-	// protected service fleet-wide. The rest of the sync proceeds.
+	// protected service fleet-wide. The rest of the sync proceeds
+	// (report-but-proceed), but the command exits non-zero (design §4.5/§8) so
+	// a deploy script notices the path typo.
 	authErr := cfg.LoadAuthSnippet(repoRoot)
 
 	p := plan.Build(cfg)
@@ -742,6 +744,12 @@ func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 	// the incremental reconcile above never deletes. Points the user at
 	// 'hemma doctor --fix'. add/update/remove proceed regardless (report-but-proceed).
 	reportDrift(detectDrift(repoRoot, cfg, mf))
+
+	// An unreadable auth_snippet source is an error even though the sync
+	// proceeded around it (keep-last-good above): exit non-zero (design §8).
+	if authErr != nil {
+		return 1
+	}
 	return 0
 }
 

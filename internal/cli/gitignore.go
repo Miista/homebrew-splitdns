@@ -84,14 +84,16 @@ func cmdDoctor(cfgPath string, args []string) int {
 	// Load the auth snippet source so the plan below renders the real
 	// (auth) file content, not the empty stub — otherwise the gitignore check's
 	// plan is stale. On failure, warn and proceed (keep-last-good), the same way
-	// runSync handles it. detectDrift/checkDrift load it independently, so this
-	// only affects the top-level plan used for the gitignore check.
+	// runSync handles it — but count it as a problem (non-zero exit, design
+	// §4.5/§8): a bad auth_snippet path is exactly what doctor exists to
+	// surface. detectDrift/checkDrift load it independently, so this only
+	// affects the top-level plan used for the gitignore check.
+	problems := 0
 	if authErr := cfg.LoadAuthSnippet(repoRoot); authErr != nil {
 		errf("auth_snippet unreadable — keeping the existing generated auth snippet: %v", authErr)
+		problems++
 	}
 	p := plan.Build(cfg)
-
-	problems := 0
 
 	// --- gitignore check ---
 	ignored, ok := ignoredPaths(repoRoot, planPaths(p))

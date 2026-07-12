@@ -253,6 +253,53 @@ func TestRun_SetAuthSnippetRejectsMissing(t *testing.T) {
 	}
 }
 
+// An unreadable auth_snippet source keeps the last-good generated file but
+// makes the mutation's sync tail exit non-zero (design §4.5/§8) — a path typo
+// must be loud, not just a stderr warning a script never sees.
+func TestRun_UnreadableAuthSnippetExitsNonZero(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth x { }\n"), 0o644)
+	Run([]string{"-C", dir, "set", "auth-snippet", "snip.caddy"})
+	Run([]string{"-C", dir, "add", "service", "docs",
+		"--fqdn", "docs.example.com", "--host", "appbox", "--backend", "paperless:8000"})
+
+	// Break the source, then run another mutation: exit 1, last-good kept.
+	os.Remove(filepath.Join(dir, "snip.caddy"))
+	if code := Run([]string{"-C", dir, "update", "service", "docs", "--backend", "paperless:8001"}); code != 1 {
+		t.Errorf("mutation with unreadable auth_snippet should exit 1, got %d", code)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "appbox", "caddy/data/hemma.auth.generated.caddy"))
+	if !contains(string(b), "forward_auth x") {
+		t.Errorf("generated auth snippet should keep last-good content, got: %s", b)
+	}
+	// The mutation itself still lands (report-but-proceed).
+	if got := load(t, dir).Services["docs"].Backend; got != "paperless:8001" {
+		t.Errorf("update should still persist despite the auth_snippet error, backend = %q", got)
+	}
+}
+
+// doctor counts an unreadable auth_snippet source as a problem (non-zero exit),
+// not just a warning.
+func TestRun_DoctorUnreadableAuthSnippetIsProblem(t *testing.T) {
+	dir := t.TempDir()
+	mkdirs(t, dir, "resolver", "appbox")
+	seed(t, dir)
+	Run([]string{"-C", dir, "add", "service", "authelia", "--fqdn", "auth.example.com", "--host", "appbox", "--backend", "authelia:9091"})
+	os.WriteFile(filepath.Join(dir, "snip.caddy"), []byte("forward_auth x { }\n"), 0o644)
+	Run([]string{"-C", dir, "set", "auth-snippet", "snip.caddy"})
+	Run([]string{"-C", dir, "set", "auth-service", "authelia"})
+
+	if code := Run([]string{"-C", dir, "doctor"}); code != 0 {
+		t.Fatalf("doctor should be clean while the source is readable, got %d", code)
+	}
+	os.Remove(filepath.Join(dir, "snip.caddy"))
+	if code := Run([]string{"-C", dir, "doctor"}); code != 1 {
+		t.Errorf("doctor with unreadable auth_snippet should exit 1, got %d", code)
+	}
+}
+
 // doctor flags source-vs-generated drift when the snippet source changes
 // without a re-sync.
 func TestRun_DoctorDetectsAuthDrift(t *testing.T) {
