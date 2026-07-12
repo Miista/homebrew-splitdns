@@ -348,3 +348,40 @@ func TestAuth_ObjectFormErrors(t *testing.T) {
 		t.Error("object form with unknown mode should error")
 	}
 }
+
+// The optional ssh: field on a host round-trips through save/load, is dropped
+// from the YAML when empty (omitempty), and SSHDest defaults to the host name.
+func TestHostSSH_RoundTripAndDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "services.yaml")
+	write(t, path, "hosts:\n  pi: {ip: 192.0.2.1}\ndomains: []\ndefaults: {}\nservices: {}\n")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Default: no ssh field → destination is the host name.
+	if got := c.Hosts["pi"].SSHDest("pi"); got != "pi" {
+		t.Errorf("SSHDest default should be the host name, got %q", got)
+	}
+	// Set a verbatim destination and round-trip it.
+	c.Hosts["pi"] = Host{IP: "192.0.2.1", SSH: "admin@raspberry.local"}
+	c.Hosts["box"] = Host{IP: "192.0.2.2"}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c2.Hosts["pi"].SSH; got != "admin@raspberry.local" {
+		t.Errorf("ssh field should round-trip, got %q", got)
+	}
+	if got := c2.Hosts["pi"].SSHDest("pi"); got != "admin@raspberry.local" {
+		t.Errorf("SSHDest should return the explicit destination, got %q", got)
+	}
+	// A host without ssh must not gain the key on disk (omitempty).
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "box: {ip: 192.0.2.2, ssh") || strings.Count(string(b), "ssh:") != 1 {
+		t.Errorf("empty ssh should be omitted from the YAML:\n%s", b)
+	}
+}

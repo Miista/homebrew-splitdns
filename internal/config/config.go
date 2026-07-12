@@ -137,6 +137,12 @@ func (a Auth) IsZero() bool { return a.Mode == AuthNone && len(a.Groups) == 0 }
 type Host struct {
 	IP  string `yaml:"ip"`
 	Dir string `yaml:"dir,omitempty"`
+	// SSH is an optional VERBATIM ssh(1) destination (an ssh_config alias,
+	// user@host, anything ssh accepts) used by `hemma deploy` to reach this
+	// host. There are deliberately no ssh_user/ssh_port fields — ssh_config
+	// owns that machinery. Empty means the host's NAME is the destination
+	// (consistent with the name == repo-dir convention).
+	SSH string `yaml:"ssh,omitempty"`
 }
 
 // ResolvedDir returns the host's repo directory: the explicit Dir if set,
@@ -144,6 +150,16 @@ type Host struct {
 func (m Host) ResolvedDir(name string) string {
 	if m.Dir != "" {
 		return m.Dir
+	}
+	return name
+}
+
+// SSHDest returns the ssh(1) destination `hemma deploy` uses to reach the
+// host: the explicit SSH field if set, else the host name (the convention is
+// destination == name, mirroring ResolvedDir).
+func (m Host) SSHDest(name string) string {
+	if m.SSH != "" {
+		return m.SSH
 	}
 	return name
 }
