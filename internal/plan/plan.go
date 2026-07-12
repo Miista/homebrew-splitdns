@@ -140,7 +140,8 @@ func Build(c *config.Config) *Plan {
 	}
 
 	// hemma.generated.caddy is written to every host's caddy/data/ dir. It
-	// contains the two import lines the Caddyfile must import. Owned under a
+	// contains the three import lines (auth snippet, tls/*, sites/*) the
+	// Caddyfile must import. Owned under a
 	// synthetic key so GC tracks it independently of services/domains.
 	const caddyImportOwner = caddyImportKey
 	var importFiles []File

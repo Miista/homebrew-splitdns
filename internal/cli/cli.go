@@ -656,13 +656,15 @@ func cmdEnableDisable(repoRoot, cfgPath string, args []string, disable bool) int
 // (design §8). It is the single sync path, invoked as the tail of every
 // mutation rather than reimplemented.
 //
-// Mode differs by mutation shape: service add/update/enable/disable use
-// Incremental (write/update, never delete — they can't orphan anything a plain
-// write wouldn't overwrite). remove-service and every host/domain/dns-host
-// mutation use Complete, because they can leave orphaned files (a removed
-// service's records, or a host/domain's now-dead cross-product of TLS
-// snippets) that must be GC'd so the repo is left clean and `hemma apply` won't
-// refuse on drift.
+// Mode differs by mutation shape: service add/update/enable use Incremental
+// (write/update, never delete — they can't orphan anything a plain write
+// wouldn't overwrite). remove-service and disable don't come through here at
+// all: they use the targeted Engine.RemoveService delete primitive (design
+// §6.1). Every host/domain/dns-host/auth-snippet/auth-service mutation uses
+// Complete, because they can leave orphaned files (a removed service's
+// records, or a host/domain's now-dead cross-product of TLS snippets) that
+// must be GC'd so the repo is left clean and `hemma apply` won't refuse on
+// drift.
 func runSync(repoRoot string, cfg *config.Config, mode syncpkg.Mode) int {
 	// Pre-flight: refuse before writing when a repo-wide precondition isn't met.
 	if reason := syncBlockedReason(cfg); reason != "" {

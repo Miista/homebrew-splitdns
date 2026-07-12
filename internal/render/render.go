@@ -70,7 +70,7 @@ func TLSSnippetName(domain string) string {
 
 // TLSSnippet renders the Caddy (tls_<domain>) snippet that points at the
 // domain's wildcard cert. The cert path convention is fixed:
-// /etc/caddy/certs/<domain>/{fullchain.cer,privkey.key} (design §4.2). The
+// /etc/caddy/certs/<domain>/{fullchain.cer,privkey.key} (design §4.3). The
 // tool generates this so a domain needs no hand-written Caddyfile snippet.
 func TLSSnippet(domain string) string {
 	return fmt.Sprintf(
