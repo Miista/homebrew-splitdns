@@ -553,14 +553,12 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	// An update with no field flags is a no-op; tell the user instead of
-	// silently reporting success.
+	// Zero flags → the interactive editor (TTY-gated; a non-terminal stdin is
+	// refused there). Any flag present keeps the non-interactive path.
 	changed := 0
 	fs.Visit(func(*flag.Flag) { changed++ })
 	if changed == 0 {
-		errf("Nothing to change for %q.", name)
-		hint("Pass at least one of --fqdn, --host, --backend, --auth-mode, or --auth-groups.")
-		return 2
+		return cmdUpdateInteractive(repoRoot, cfgPath, name)
 	}
 	// Validate --auth/--auth-mode up front (usage error before touching YAML).
 	newMode, ok := resolveAuthMode(fs, *authFlag, *authMode)
@@ -594,19 +592,9 @@ func cmdUpdate(repoRoot, cfgPath string, args []string) int {
 			svc.Auth.Groups = splitGroups(*authGroups)
 		}
 	})
-	// Groups only make sense with an auth gate — refuse the resulting combo
-	// before persisting (validate-before-persist), whichever flag caused it.
-	if svc.Auth.Mode == config.AuthNone && len(svc.Auth.Groups) > 0 {
-		errf("Auth groups without an auth mode — pass --auth-mode forward|oidc, or clear the groups with --auth-groups ''.")
-		return 2
-	}
-	cfg.Services[name] = svc
-	if err := cfg.Save(); err != nil {
-		errf("%v", err)
-		return 1
-	}
-	fmt.Printf(tick+" Updated service %q\n", name)
-	return runSync(repoRoot, cfg, syncpkg.Incremental)
+	// Shared tail with the interactive editor: validate-before-persist, save,
+	// single sync path.
+	return persistUpdatedService(repoRoot, cfg, name, svc)
 }
 
 func cmdRemove(repoRoot, cfgPath string, args []string) int {
@@ -989,6 +977,7 @@ Commands are verb-first: <verb> <noun> <args>.
 Services (an app reached at an fqdn, on a host, under a domain):
   hemma add     service <name> --fqdn <f> --host <h> --backend <b> [--auth-mode forward|oidc] [--auth-groups <g1,g2>]
   hemma update  service <name> [--fqdn ...] [--host ...] [--backend ...] [--auth-mode forward|oidc|none] [--auth-groups <g1,g2>]
+                                 With no flags: an interactive editor (terminal only), pre-filled with current values.
   hemma remove  service <name>
   hemma disable service <name>   Stop generating DNS/Caddy config for a service (keeps it in services.yaml).
   hemma enable  service <name>   Re-enable a disabled service (regenerates its files).
