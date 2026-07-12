@@ -90,18 +90,26 @@ func TestCreateAppOIDC_ServiceWithoutGroupsKeepsOneFactor(t *testing.T) {
 	}
 }
 
-func TestCreateAppOIDC_UnknownAppFallsBack(t *testing.T) {
-	dir := t.TempDir() // no services.yaml at all
+func TestCreateAppOIDC_UnknownAppDerivesFromDomains(t *testing.T) {
+	dir := t.TempDir()
+	seedWithAuth(t, dir) // domains: [example.com]
 	var code int
 	out := captureStdout(t, func() { code = Run([]string{"-C", dir, "create", "app", "oidc", "myapp"}) })
 	if code != 0 {
-		t.Fatalf("exit = %d, want 0 (create works without services.yaml)", code)
+		t.Fatalf("exit = %d, want 0", code)
 	}
-	if !strings.Contains(out, "- 'https://myapp.guldmund.dk/CHANGEME'") {
-		t.Errorf("unknown app should fall back to <app>.guldmund.dk:\n%s", out)
+	if !strings.Contains(out, "- 'https://myapp.example.com/CHANGEME'") {
+		t.Errorf("unknown app should derive <app>.<first-domain>:\n%s", out)
 	}
 	if !strings.Contains(out, "authorization_policy: 'one_factor'") {
 		t.Errorf("unknown app should default to one_factor:\n%s", out)
+	}
+}
+
+func TestCreateAppOIDC_UnknownAppNoDomainsRefuses(t *testing.T) {
+	dir := t.TempDir() // no services.yaml at all → no domains to derive from
+	if code := Run([]string{"-C", dir, "create", "app", "oidc", "myapp"}); code != 1 {
+		t.Errorf("unknown app with no configured domains should exit 1, got %d", code)
 	}
 }
 

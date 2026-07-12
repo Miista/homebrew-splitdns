@@ -120,7 +120,10 @@ configuration is never written.
 
 If <app_name> matches a configured service, its real fqdn is used for the
 redirect URI, and — when the service has auth groups — the snippet references
-the generated named authorization policy instead of one_factor.
+the generated named authorization policy instead of one_factor. Otherwise the
+redirect host is derived from the configured domains (<app_name>.<first domain
+alphabetically>); with no domains configured the command refuses — add the
+service or a domain first.
 [callback_path] defaults to /CHANGEME (apps differ; fill in the real path).`},
 
 	{"create user", `hemma create user — interactively create an auth user (hash + snippet)

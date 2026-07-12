@@ -19,10 +19,6 @@ import (
 // config or users database (hand-owned, secret-bearing files), and everything
 // provider-specific (digest formats, snippet YAML) lives behind auth.Provider.
 
-// fallbackAppDomain is the domain used for the redirect URI when the app name
-// matches no configured service (authcli's historical behavior).
-const fallbackAppDomain = "guldmund.dk"
-
 // dispatchCreate routes `create app oidc <name> [callback]` and
 // `create user <name>`.
 func dispatchCreate(cfgPath string, args []string) int {
@@ -53,8 +49,10 @@ func dispatchCreate(cfgPath string, args []string) int {
 // the provider config snippet. If the app name matches a configured service,
 // its real fqdn is used for the redirect URI, and — when the service has auth
 // groups — the generated named authorization policy is referenced instead of
-// one_factor (see auth.Provider.AccessControl). services.yaml is optional:
-// with none, the authcli-compatible <app>.guldmund.dk fallback applies.
+// one_factor (see auth.Provider.AccessControl). When the app matches no
+// configured service, the redirect host is derived from the repo's configured
+// domains (<app>.<first domain alphabetically>); with no domains configured
+// there is nothing to derive a host from, so the command refuses with a hint.
 func cmdCreateAppOIDC(cfgPath string, args []string) int {
 	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
 		errf("Missing the <app_name>.")
@@ -71,7 +69,7 @@ func cmdCreateAppOIDC(cfgPath string, args []string) int {
 		callbackPath = args[1]
 	}
 
-	fqdn := app + "." + fallbackAppDomain
+	fqdn := ""
 	policy := "one_factor"
 	if cfg, err := config.Load(cfgPath); err == nil && cfg.Exists {
 		if svc, ok := cfg.Services[app]; ok {
@@ -81,7 +79,16 @@ func cmdCreateAppOIDC(cfgPath string, args []string) int {
 				// the service; the client must reference it by that name.
 				policy = app
 			}
+		} else if doms := cfg.DomainNames(); len(doms) > 0 {
+			// Unknown app: derive the redirect host from the configured domains
+			// (DomainNames is sorted, so this is the first alphabetically).
+			fqdn = app + "." + doms[0]
 		}
+	}
+	if fqdn == "" {
+		errf("%q matches no configured service and no domains are configured — the redirect URI's host can't be derived.", app)
+		hint("Add the service ('hemma add service %s ...') or a domain ('hemma add domain <name>') first.", app)
+		return 1
 	}
 
 	provider := auth.Default()
