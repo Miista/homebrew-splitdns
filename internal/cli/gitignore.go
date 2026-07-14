@@ -136,6 +136,9 @@ func cmdDoctor(cfgPath string, args []string) int {
 	// --- generated-file drift check (missing / modified / orphaned) ---
 	problems += checkDrift(repoRoot, cfg, fix)
 
+	// --- deploy ssh readiness (known_hosts + no-op probe per remote host) ---
+	problems += checkDeployReadiness(cfg)
+
 	// --- instructive advisories (auth config, users database, wiring) ---
 	// Report-but-proceed: these don't corrupt generated files, but the
 	// snippet-without-auth_service case reproduces the redirect-loop bug, so it

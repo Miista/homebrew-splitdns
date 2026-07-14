@@ -217,8 +217,11 @@ config changes. Refuses if the repo has drift.`},
 
 Usage: hemma deploy [<host> ...]
 
-Makes the fleet match origin, in two strictly ordered phases:
+Makes the fleet match origin, in three strictly ordered phases:
 
+  Phase 0 — probe:  'ssh <dest> true' to every REMOTE host. ANY host
+                    unreachable over ssh aborts before anything is pulled —
+                    a clear "unreachable" instead of git-pull noise later.
   Phase 1 — pull:   'git -C ~/docker pull --ff-only' on every target host.
                     ANY failure (divergence, dirty remote tree, unreachable
                     host, ssh auth) aborts the ENTIRE deploy before phase 2 —
@@ -236,7 +239,8 @@ dns_host); pass names to restrict. Hosts are reached with
 Refuses up front if the LOCAL repo is dirty or has unpushed commits —
 deploying means "make the fleet match origin", so push first.`},
 
-	{"doctor", `hemma doctor — audit the repo (gitignore, Caddyfile imports, drift, auth)
+	{"doctor", `hemma doctor — audit the repo (gitignore, Caddyfile imports, drift, auth,
+deploy readiness)
 
 Usage: hemma doctor [--fix]
 
@@ -248,7 +252,16 @@ config, users database, or compose file); --fix cannot resolve them. Each
 advisory prints a headline (the consequence), the mechanism, and a fixed
 'fix:'/'then:' grammar — the exact edit to paste in (e.g. the
 X_AUTHELIA_CONFIG value that wires the generated access-control file into
-the auth container) and the follow-up command (usually 'hemma apply').`},
+the auth container) and the follow-up command (usually 'hemma apply').
+
+The deploy-readiness check verifies each remote deploy target has a host key
+in THIS machine's known_hosts ('ssh-keygen -F' against the host's ip and its
+ssh destination — either counts). 'hemma deploy' sshes with BatchMode=yes,
+which cannot answer the first-connection trust prompt, so a missing entry
+fails deploy outright. Not --fix-able (hemma does not own known_hosts): the
+recipe is to connect once interactively and verify the fingerprint. doctor
+never connects anywhere — whether ssh auth actually WORKS is verified by
+deploy itself, in its phase-0 probe.`},
 
 	{"measure", `hemma measure — time the HTTPS request breakdown (dns/connect/tls/ttfb)
 

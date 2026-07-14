@@ -16,11 +16,15 @@ import (
 //
 // deploy is the ONE deliberate exception to the "no SSH" non-goal (design
 // §12) — the precedent being `apply`, which relaxed the "no reloads" non-goal
-// the same way. It runs exactly two things per host, in two strictly ordered
-// phases:
+// the same way. It runs in three strictly ordered phases:
 //
-//	Phase 1 — pull everywhere:  git -C ~/docker pull --ff-only
-//	Phase 2 — apply everywhere: hemma apply   (remotes first, self LAST)
+//	Phase 0 — probe reachability: ssh <dest> true  (remotes only)
+//	Phase 1 — pull everywhere:    git -C ~/docker pull --ff-only
+//	Phase 2 — apply everywhere:   hemma apply   (remotes first, self LAST)
+//
+// Phase 0 aborts up front if any remote is unreachable over ssh, so a
+// mis-wired host (missing key, unknown host key) fails before anything is
+// pulled — a clear "unreachable" instead of git-pull noise mid-fan-out.
 //
 // Phase 1 is all-or-nothing: `pull --ff-only` either fast-forwards or refuses
 // touching nothing, so ANY failure (divergence, dirty remote tree, unreachable
@@ -174,6 +178,13 @@ func deployPreflight(repoRoot string) error {
 // Per-target argv builders. A local target operates on the local checkout
 // (repoRoot, which honors -C); remotes use the baked-in ~/docker convention.
 
+// probeArgv is Phase 0's no-op reachability check: `true` exits 0 on any host,
+// so the only way it fails is the ssh transport itself (auth, host key,
+// unreachable). Local targets are never probed (they don't ssh).
+func probeArgv(deployTarget, string) []string {
+	return []string{"true"}
+}
+
 func pullArgv(t deployTarget, localRepo string) []string {
 	repo := remoteRepoPath
 	if t.Local {
@@ -232,10 +243,51 @@ func summarizePull(out string) string {
 	return "pulled"
 }
 
+// deployProbe is Phase 0: ssh a no-op to every remote target and abort the
+// whole deploy if any is unreachable, before Phase 1 pulls anything. Returns 0
+// to proceed, 1 to abort. Local targets are skipped (they never ssh).
+func deployProbe(r deployRunner, targets []deployTarget) int {
+	fmt.Printf("\n%s== Phase 0: probe ==%s\n", boldOn, boldOff)
+	unreachable := false
+	for _, t := range targets {
+		if t.Local {
+			fmt.Printf("  "+tick+" %s: local (no ssh)\n", t.Name)
+			continue
+		}
+		out, err := r.run(t, probeArgv(t, ""))
+		if err == nil {
+			fmt.Printf("  "+tick+" %s: reachable\n", t.Name)
+			continue
+		}
+		fmt.Printf("  "+cross+" %s: unreachable\n", t.Name)
+		printIndented(out)
+		unreachable = true
+	}
+	if unreachable {
+		fmt.Println()
+		errf("One or more hosts are unreachable over ssh — deploy aborted, nothing pulled or applied.")
+		hint("deploy uses 'ssh -o BatchMode=yes <dest>' (no interactive prompts), so each host")
+		hint("needs non-interactive key auth from here and an entry in known_hosts. Check the")
+		hint("host's 'ssh:' field in services.yaml, then verify: ssh -o BatchMode=yes <dest> true")
+		return 1
+	}
+	return 0
+}
+
 // runDeploy executes the two phases against resolved, ordered targets.
 // Factored off cmdDeploy so the phase logic runs under a fake runner in tests.
 func runDeploy(r deployRunner, targets []deployTarget, localRepo string) int {
 	fmt.Printf("Deploying to %d %s: %s.\n", len(targets), plural(len(targets), "host"), joinTargetNames(targets))
+
+	// Phase 0 — probe ssh reachability to every REMOTE target; ANY failure
+	// aborts before a single host pulls. Phase 1's first per-host command
+	// already SSHes, so this catches nothing Phase 1 wouldn't — but it moves
+	// the abort earlier (nothing pulled anywhere, not even the first host) and
+	// turns a transport failure into a clear "unreachable" message instead of
+	// git-pull noise. Self is Local (no ssh), so it is not probed.
+	if code := deployProbe(r, targets); code != 0 {
+		return code
+	}
 
 	// Phase 1 — pull everywhere; ANY failure aborts the whole deploy.
 	// Success is one tick line per host (apply-style); the raw git output is

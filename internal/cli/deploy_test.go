@@ -92,6 +92,7 @@ func TestResolveDeployTargets_ExplicitNames(t *testing.T) {
 // "<host> <first two argv words>"-ish prefixes matched against the joined argv.
 type fakeRunner struct {
 	calls    []string          // "<host>: <argv joined>"
+	probeErr map[string]bool   // host -> fail its phase-0 probe
 	failOn   map[string]bool   // host -> fail its pull
 	applyErr map[string]bool   // host -> fail its apply
 	heads    map[string]string // host -> rev-parse output (default "aaa")
@@ -101,6 +102,11 @@ func (f *fakeRunner) run(t deployTarget, argv []string) (string, error) {
 	cmd := strings.Join(argv, " ")
 	f.calls = append(f.calls, t.Name+": "+cmd)
 	switch {
+	case cmd == "true":
+		if f.probeErr[t.Name] {
+			return "ssh: connect to host appbox.lan port 22: Connection refused", fmt.Errorf("exit status 255")
+		}
+		return "", nil
 	case strings.Contains(cmd, "pull"):
 		if f.failOn[t.Name] {
 			return "fatal: Not possible to fast-forward, aborting.", fmt.Errorf("exit status 128")
@@ -140,8 +146,10 @@ func TestRunDeploy_HappyPath(t *testing.T) {
 	if code := runDeploy(f, deployTestTargets, "/repo"); code != 0 {
 		t.Fatalf("happy path should exit 0, got %d (calls: %v)", code, f.calls)
 	}
-	// Remote pulls the convention path, local pulls the local checkout.
+	// Phase 0 probes the remote first, then remote pulls the convention path
+	// and local pulls the local checkout.
 	wantPrefix := []string{
+		"appbox: true",
 		"appbox: git -C ~/docker pull --ff-only",
 		"resolver: git -C /repo pull --ff-only",
 	}
@@ -162,6 +170,37 @@ func TestRunDeploy_HappyPath(t *testing.T) {
 	}
 	if !strings.HasPrefix(applies[1], "resolver: ") || !strings.HasSuffix(applies[1], "-C /repo apply") {
 		t.Errorf("self apply should run last against the local checkout, got %v", applies)
+	}
+}
+
+// Phase 0 probes only remotes (self is Local, no ssh) and happens before any
+// pull.
+func TestRunDeploy_Phase0ProbesRemotesOnly(t *testing.T) {
+	f := &fakeRunner{}
+	if code := runDeploy(f, deployTestTargets, "/repo"); code != 0 {
+		t.Fatalf("happy path should exit 0, got %d (calls: %v)", code, f.calls)
+	}
+	// Exactly one probe, for the remote; self (resolver) is never probed.
+	if got := f.count(": true"); got != 1 {
+		t.Errorf("want 1 probe (remote only), got %d (calls %v)", got, f.calls)
+	}
+	if f.calls[0] != "appbox: true" {
+		t.Errorf("probe must run first, got %q", f.calls[0])
+	}
+}
+
+// Phase 0 abort: an unreachable remote stops the deploy before any pull or
+// apply.
+func TestRunDeploy_Phase0AbortOnUnreachable(t *testing.T) {
+	f := &fakeRunner{probeErr: map[string]bool{"appbox": true}}
+	if code := runDeploy(f, deployTestTargets, "/repo"); code != 1 {
+		t.Fatalf("unreachable host should exit 1, got %d", code)
+	}
+	if f.count("pull") != 0 {
+		t.Errorf("nothing must be pulled after a probe failure, got calls %v", f.calls)
+	}
+	if f.count("apply") != 0 {
+		t.Errorf("nothing must be applied after a probe failure, got calls %v", f.calls)
 	}
 }
 
